@@ -85,7 +85,7 @@ const server = http.createServer(async (req, res) => {
     proxy_url(url)
 
     // Now serve the collaborative text!
-    braid_text.serve(req, res, { key: url })
+    braid_text.serve(req, res, { key: normalize_url(url) })
 });
 
 server.listen(port, () => {
@@ -94,6 +94,10 @@ server.listen(port, () => {
 });
 
 ////////////////////////////////
+
+function normalize_url(url) {
+    return url.replace(/(\/index|\/)+$/, '')
+}
 
 async function proxy_url(url) {
     let chain = proxy_url.chain || (proxy_url.chain = Promise.resolve())
@@ -115,7 +119,7 @@ async function proxy_url(url) {
                         await require("fs").promises.mkdir(path, { recursive: true })
 
                         while (await is_dir(partial))
-                            partial = require("path").join(partial, 'index.html')
+                            partial = require("path").join(partial, 'index')
 
                         await require("fs").promises.writeFile(partial, save)
                         break
@@ -125,8 +129,8 @@ async function proxy_url(url) {
         }))
     }
 
-    // normalize url by removing any trailing /index.html/index.html/
-    let normalized_url = url.replace(/(\/index\.html|\/)+$/, '')
+    // normalize url by removing any trailing /index/index/
+    let normalized_url = normalize_url(url)
     let wasnt_normal = normalized_url != url
     url = normalized_url
 
@@ -139,7 +143,7 @@ async function proxy_url(url) {
     let path = url.replace(/^https?:\/\//, '')
     let fullpath = require("path").join(proxy_base, path)
 
-    // if we're accessing /blah/index.html, it will be normalized to /blah,
+    // if we're accessing /blah/index, it will be normalized to /blah,
     // but we still want to create a directory out of blah in this case
     if (wasnt_normal && !(await is_dir(fullpath))) await ensure_path(fullpath)
 
@@ -149,7 +153,7 @@ async function proxy_url(url) {
 
     async function get_fullpath() {
         let p = fullpath
-        while (await is_dir(p)) p = require("path").join(p, 'index.html')
+        while (await is_dir(p)) p = require("path").join(p, 'index')
         return p
     }
 
@@ -275,7 +279,7 @@ async function proxy_url(url) {
             path = require('path').relative(proxy_base, path)
             console.log(`path changed: ${path}`)
 
-            path = path.replace(/(\/index\.html|\/)+$/, '')
+            path = normalize_url(path)
             // console.log(`normalized path: ${path}`)
 
             proxy_url.path_to_func[path]()
