@@ -1,15 +1,18 @@
 
 let http = require('http');
-
 let { diff_main } = require('./diff.js')
 let braid_text = require("braid-text");
 let braid_fetch = require('braid-http').fetch
+
+process.on("unhandledRejection", (x) => console.log(`unhandledRejection: ${x.stack}`))
+process.on("uncaughtException", (x) => console.log(`uncaughtException: ${x.stack}`))
 
 let port = 10000
 let cookie = null
 let pin_urls = []
 let pindex_urls = []
 let proxy_base = `./proxy_base`
+let proxy_base_support = `./proxy_base_support`
 
 let argv = process.argv.slice(2)
 while (argv.length) {
@@ -30,8 +33,19 @@ while (argv.length) {
 }
 console.log({ pin_urls, pindex_urls })
 
-process.on("unhandledRejection", (x) => console.log(`unhandledRejection: ${x.stack}`))
-process.on("uncaughtException", (x) => console.log(`uncaughtException: ${x.stack}`))
+for (let url of pin_urls) proxy_url(url)
+pindex_urls.forEach(async url => {
+    let prefix = new URL(url).origin
+    while (true) {
+        let urls = await (await fetch(url)).json()
+        for (let url of urls) proxy_url(prefix + url)
+        await new Promise(done => setTimeout(done, 1000 * 60 * 60))
+    }
+})
+
+braid_text.list().then(x => {
+    for (let xx of x) proxy_url(xx)
+})
 
 const server = http.createServer(async (req, res) => {
     console.log(`${req.method} ${req.url}`);
@@ -79,20 +93,6 @@ server.listen(port, () => {
     console.log('This proxy is only accessible from localhost');
 });
 
-for (let url of pin_urls) proxy_url(url)
-pindex_urls.forEach(async url => {
-    let prefix = new URL(url).origin
-    while (true) {
-        let urls = await (await fetch(url)).json()
-        for (let url of urls) proxy_url(prefix + url)
-        await new Promise(done => setTimeout(done, 1000 * 60 * 60))
-    }
-})
-
-braid_text.list().then(x => {
-    for (let xx of x) proxy_url(xx)
-})
-
 ////////////////////////////////
 
 async function proxy_url(url) {
@@ -134,18 +134,114 @@ async function proxy_url(url) {
     if (proxy_url.cache[url]) return
     proxy_url.cache[url] = true
 
+    console.log(`proxy_url: ${url}`)
+
     let path = url.replace(/^https?:\/\//, '')
     let fullpath = require("path").join(proxy_base, path)
 
     // if we're accessing /blah/index.html, it will be normalized to /blah,
     // but we still want to create a directory out of blah in this case
-    if (wasnt_normal && !(await is_dir(fullpath))) ensure_path(fullpath)
+    if (wasnt_normal && !(await is_dir(fullpath))) await ensure_path(fullpath)
 
-    let last_text = ''
+    await ensure_path(require("path").dirname(fullpath))
 
-    console.log(`proxy_url: ${url}`)
+    await require("fs").promises.mkdir(proxy_base_support, { recursive: true })
+
+    async function get_fullpath() {
+        let p = fullpath
+        while (await is_dir(p)) p = require("path").join(p, 'index.html')
+        return p
+    }
 
     let peer = Math.random().toString(36).slice(2)
+    var char_counter = -1
+    let file_last_version = null
+    let file_last_text = null
+    let file_needs_reading = true
+    let file_needs_writing = null
+    let file_loop_pump_lock = 0
+
+    function signal_file_needs_reading() {
+        file_needs_reading = true
+        file_loop_pump()
+    }
+
+    function signal_file_needs_writing() {
+        file_needs_writing = true
+        file_loop_pump()
+    }
+
+    async function send_out(stuff) {
+        await braid_fetch_wrapper(url, {
+            headers: {
+                "Merge-Type": "dt",
+                "Content-Type": 'text/plain',
+                ...(cookie ? { "Cookie": cookie } : {}),
+            },
+            method: "PUT",
+            retry: true,
+            ...stuff
+        })
+    }
+
+    file_loop_pump()
+    async function file_loop_pump() {
+        if (file_loop_pump_lock) return
+        file_loop_pump_lock++
+
+        if (file_last_version === null) {
+            try {
+                file_last_version = JSON.parse(await require('fs').promises.readFile(require('path').join(proxy_base_support, braid_text.encode_filename(url)), { encoding: 'utf8' }))
+                file_last_text = (await braid_text.get(url, { version: file_last_version })).body
+                file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
+            } catch (e) {
+                file_last_version = []
+                file_last_text = ''
+                file_needs_writing = true
+            }
+        }
+
+        while (file_needs_reading || file_needs_writing) {
+            if (file_needs_reading) {
+                file_needs_reading = false
+
+                let text = ''
+                try { text = await require('fs').promises.readFile(await get_fullpath(), { encoding: 'utf8' }) } catch (e) { }
+
+                var patches = diff(file_last_text, text)
+                if (patches.length) {
+                    // convert from js-indicies to code-points
+                    char_counter += patches_to_code_points(patches, file_last_text)
+
+                    file_last_text = text
+
+                    var version = [peer + "-" + char_counter]
+                    var parents = file_last_version
+                    file_last_version = version
+
+                    send_out({ version, parents, patches, peer })
+
+                    await braid_text.put(url, { version, parents, patches, peer })
+
+                    await require('fs').promises.writeFile(require('path').join(proxy_base_support, braid_text.encode_filename(url)), JSON.stringify(file_last_version))
+                }
+            }
+            if (file_needs_writing) {
+                file_needs_writing = false
+
+                console.log(`writing file ${await get_fullpath()}`)
+
+                let { version, body } = await braid_text.get(url, {})
+                if (!v_eq(version, file_last_version)) {
+                    file_last_version = version
+                    file_last_text = body
+                    await require('fs').promises.writeFile(await get_fullpath(), file_last_text)
+                    await require('fs').promises.writeFile(require('path').join(proxy_base_support, braid_text.encode_filename(url)), JSON.stringify(file_last_version))
+                }
+            }
+        }
+        file_loop_pump_lock--
+    }
 
     braid_fetch_wrapper(url, {
         headers: {
@@ -160,81 +256,18 @@ async function proxy_url(url) {
         },
         peer
     }).then(x => {
-        x.subscribe(update => {
+        x.subscribe(async update => {
             // console.log(`update: ${JSON.stringify(update, null, 4)}`)
             if (update.version.length == 0) return;
 
-            braid_text.put(url, { ...update, peer })
+            await braid_text.put(url, { ...update, peer })
+
+            signal_file_needs_writing()
         })
-    })
-
-    // try a HEAD without subscribe to get the version
-    braid_fetch_wrapper(url, {
-        method: 'HEAD',
-        headers: { Accept: 'text/plain' },
-        retry: true,
-    }).then(async head_res => {
-        let parents = head_res.headers.get('version') ?
-            JSON.parse(`[${head_res.headers.get('version')}]`) :
-            null
-
-        // now get everything since then, and send it back..
-        braid_text.get(url, {
-            parents,
-            merge_type: 'dt',
-            peer,
-            subscribe: async ({ version, parents, body, patches }) => {
-                if (version.length == 0) return;
-
-                // console.log(`local got: ${JSON.stringify({ version, parents, body, patches }, null, 4)}`)
-                // console.log(`cookie = ${cookie}`)
-
-                await braid_fetch_wrapper(url, {
-                    headers: {
-                        "Merge-Type": "dt",
-                        "Content-Type": 'text/plain',
-                        ...(cookie ? { "Cookie": cookie } : {}),
-                    },
-                    method: "PUT",
-                    retry: true,
-                    version, parents, body, patches,
-                    peer
-                })
-            },
-        })
-    })
-
-    await ensure_path(require("path").dirname(fullpath))
-
-    async function get_fullpath() {
-        let p = fullpath
-        while (await is_dir(p)) p = require("path").join(p, 'index.html')
-        return p
-    }
-
-    let simpleton = simpleton_client(url, {
-        apply_remote_update: async ({ state, patches }) => {
-            return await (chain = chain.then(async () => {
-                console.log(`writing file ${await get_fullpath()}`)
-
-                if (state !== undefined) last_text = state
-                else last_text = apply_patches(last_text, patches)
-                await require('fs').promises.writeFile(await get_fullpath(), last_text)
-                return last_text
-            }))
-        },
-        generate_local_diff_update: async (_) => {
-            return await (chain = chain.then(async () => {
-                let text = await require('fs').promises.readFile(await get_fullpath(), { encoding: 'utf8' })
-                var patches = diff(last_text, text)
-                last_text = text
-                return patches.length ? { patches, new_state: last_text } : null
-            }))
-        }
     })
 
     if (!proxy_url.path_to_func) proxy_url.path_to_func = {}
-    proxy_url.path_to_func[path] = () => simpleton.changed()
+    proxy_url.path_to_func[path] = signal_file_needs_reading
 
     if (!proxy_url.chokidar) {
         proxy_url.chokidar = true
@@ -243,11 +276,43 @@ async function proxy_url(url) {
             console.log(`path changed: ${path}`)
 
             path = path.replace(/(\/index\.html|\/)+$/, '')
-            console.log(`normalized path: ${path}`)
+            // console.log(`normalized path: ${path}`)
 
             proxy_url.path_to_func[path]()
         });
     }
+
+    // try a HEAD without subscribe to get the version
+    let parents = null
+    try {
+        let head_res = await braid_fetch_wrapper(url, {
+            method: 'HEAD',
+            headers: { Accept: 'text/plain' },
+            retry: true,
+        })
+        parents = head_res.headers.get('version') ?
+            JSON.parse(`[${head_res.headers.get('version')}]`) :
+            null
+    } catch (e) {
+        console.log('HEAD failed: ', e)
+    }
+
+    // now get everything since then, and send it back..
+    braid_text.get(url, {
+        parents,
+        merge_type: 'dt',
+        peer,
+        subscribe: async ({ version, parents, body, patches }) => {
+            if (version.length == 0) return;
+
+            // console.log(`local got: ${JSON.stringify({ version, parents, body, patches }, null, 4)}`)
+            // console.log(`cookie = ${cookie}`)
+
+            signal_file_needs_writing()
+
+            send_out({ version, parents, body, patches, peer })
+        },
+    })
 }
 
 async function is_dir(p) {
@@ -291,118 +356,30 @@ function free_the_cors(req, res) {
     }
 }
 
-function apply_patches(originalString, patches) {
-    let offset = 0;
+function patches_to_code_points(patches, prev_state) {
+    let char_counter = 0
+    let c = 0
+    let i = 0
     for (let p of patches) {
-        p.range[0] += offset;
-        p.range[1] += offset;
-        offset -= p.range[1] - p.range[0];
-        offset += p.content.length;
-    }
-
-    let result = originalString;
-
-    for (let p of patches) {
-        let range = p.range;
-        result =
-            result.substring(0, range[0]) +
-            p.content +
-            result.substring(range[1]);
-    }
-
-    return result;
-}
-
-function simpleton_client(url, { apply_remote_update, generate_local_diff_update, content_type }) {
-    var peer = Math.random().toString(36).slice(2)
-    var current_version = []
-    var prev_state = ""
-    var char_counter = -1
-    var chain = Promise.resolve()
-    var queued_changes = 0
-
-    braid_text.get(url, {
-        peer,
-        subscribe: (update) => {
-            chain = chain.then(async () => {
-                // Only accept the update if its parents == our current version
-                update.parents.sort()
-                if (current_version.length === update.parents.length
-                    && current_version.every((v, i) => v === update.parents[i])) {
-                    current_version = update.version.sort()
-                    update.state = update.body
-
-                    if (update.patches) {
-                        for (let p of update.patches) p.range = p.range.match(/\d+/g).map((x) => 1 * x)
-                        update.patches.sort((a, b) => a.range[0] - b.range[0])
-
-                        // convert from code-points to js-indicies
-                        let c = 0
-                        let i = 0
-                        for (let p of update.patches) {
-                            while (c < p.range[0]) {
-                                i += get_char_size(prev_state, i)
-                                c++
-                            }
-                            p.range[0] = i
-
-                            while (c < p.range[1]) {
-                                i += get_char_size(prev_state, i)
-                                c++
-                            }
-                            p.range[1] = i
-                        }
-                    }
-
-                    prev_state = await apply_remote_update(update)
-                }
-            })
+        while (i < p.range[0]) {
+            i += get_char_size(prev_state, i)
+            c++
         }
-    })
+        p.range[0] = c
 
-    return {
-        changed: () => {
-            if (queued_changes) return
-            queued_changes++
-            chain = chain.then(async () => {
-                queued_changes--
-                var update = await generate_local_diff_update(prev_state)
-                if (!update) return   // Stop if there wasn't a change!
-                var { patches, new_state } = update
-
-                // convert from js-indicies to code-points
-                let c = 0
-                let i = 0
-                for (let p of patches) {
-                    while (i < p.range[0]) {
-                        i += get_char_size(prev_state, i)
-                        c++
-                    }
-                    p.range[0] = c
-
-                    while (i < p.range[1]) {
-                        i += get_char_size(prev_state, i)
-                        c++
-                    }
-                    p.range[1] = c
-
-                    char_counter += p.range[1] - p.range[0]
-                    char_counter += count_code_points(p.content)
-
-                    p.unit = "text"
-                    p.range = `[${p.range[0]}:${p.range[1]}]`
-                }
-
-                var version = [peer + "-" + char_counter]
-
-                var parents = current_version
-                current_version = version
-                prev_state = new_state
-
-                braid_text.put(url, { version, parents, patches, peer })
-            })
+        while (i < p.range[1]) {
+            i += get_char_size(prev_state, i)
+            c++
         }
+        p.range[1] = c
+
+        char_counter += p.range[1] - p.range[0]
+        char_counter += count_code_points(p.content)
+
+        p.unit = "text"
+        p.range = `[${p.range[0]}:${p.range[1]}]`
     }
+    return char_counter
 }
 
 function get_char_size(s, i) {
@@ -456,4 +433,8 @@ async function braid_fetch_wrapper(url, params) {
             }
         })
     }
+}
+
+function v_eq(v1, v2) {
+    return v1.length == v2.length && v1.every((x, i) => x == v2[i])
 }
