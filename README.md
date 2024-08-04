@@ -1,67 +1,60 @@
 # braidfs
-braid technology synchronizing files and webpages
+Proxy braid collaborative text pages as editable files on disk.
 
-## Features
-
-- Proxies web resources as collaborative text using the Braid protocol
-- Caches proxied content locally
-- Monitors local files for changes and syncs them back to the origin
-- Supports pinning specific URLs
 
 ## Installation
 
-Clone the repository:
+Install braidfs globally using npm:
 
-```bash
-git clone https://github.com/braid-org/braidfs.git
-cd braidfs
 ```
-
-Install dependencies:
-
-```bash
-npm install
+npm install -g braidfs
 ```
 
 ## Usage
 
-Run the server:
+To start braidfs, run the following command:
 
-```bash
-node index.js [PORT] [OPTIONS]
+```
+braidfs [port] [-pin <url>] [-pin index <url>]
 ```
 
-### Options
-
-- `PORT`: The port number to run the server on (default: 10000)
-- `-pin URL`: Pin a specific URL to be proxied
-- `-pin index URL`: Pin an index URL that contains a list of URLs to be proxied
-- `COOKIE`: Set a cookie to be used in requests (optional)
+- `[port]`: Optional. Specify the port number (default is 10000).
+- `-pin <url>`: Pin a specific URL for synchronization.
+- `-pin index <url>`: Pin an index URL that contains a list of URLs to synchronize.
 
 Example:
 
-```bash
-node index.js 60000 -pin https://example.com/resource -pin index https://example.com/index.json mycookie=value
+```
+braidfs 8080 -pin https://example.com/document.txt -pin index https://example.com/index.json
 ```
 
-This will run a server on port 60000, pin the specified URL, use the index URL to proxy multiple resources, and set a cookie for requests.
+## Configuration
+
+braidfs looks for a configuration file at `~/.braidfs/config.json`. You can set the following options:
+
+- `port`: The port number for the proxy server.
+- `pin_urls`: An array of URLs to pin for synchronization.
+- `pindex_urls`: An array of index URLs containing lists of URLs to synchronize.
+- `proxy_base`: The base directory for storing proxied files (default is `~/http`).
+
+Example `config.json`:
+
+```json
+{
+  "port": 9000,
+  "pin_urls": ["https://example.com/document1.txt", "https://example.com/document2.txt"],
+  "pindex_urls": ["https://example.com/index.json"],
+  "proxy_base": "/path/to/custom/proxy/directory"
+}
+```
 
 ## Accessing the Proxy
 
 The proxy only allows connections from localhost for security reasons.
 
 - `/pages`: Shows all the proxied URLs
-- `/URL`: Proxies the specified URL as Braid text and creates a file in `proxy_base/URL`
+- `/URL`: Proxies the specified URL and creates a file in `proxy_base/URL`
 
-## File Structure
+## Security
 
-- `braid-text-db`: Stores local cached information
-- `proxy_base`: Stores proxied files, which are updated when resources change and monitored for local changes
-
-## Security Note
-
-This proxy is designed to be accessible only from localhost. Attempting to access it from any other IP address will result in a 403 Forbidden error.
-
-## Known Issues
-
-- The server doesn't automatically resubscribe to proxied resources when restarted, though it will keep trying to re-establish broken connections while running.
+braidfs is designed to run locally and only accepts connections from localhost (127.0.0.1 or ::1) for security reasons.

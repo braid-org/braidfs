@@ -7,34 +7,47 @@ let braid_fetch = require('braid-http').fetch
 process.on("unhandledRejection", (x) => console.log(`unhandledRejection: ${x.stack}`))
 process.on("uncaughtException", (x) => console.log(`uncaughtException: ${x.stack}`))
 
-let port = 10000
-let cookie = null
-let pin_urls = []
-let pindex_urls = []
-let proxy_base = `./proxy_base`
-let proxy_base_support = `./proxy_base_support`
+let braidfs_config_dir = require('path').join(require('os').homedir(), '.braidfs')
+let braidfs_config_path = require('path').join(braidfs_config_dir, 'config.json')
+braid_text.db_folder = require('path').join(braidfs_config_dir, 'braid-text-db')
 
+let config = {
+    port: 10000,
+    pin_urls: [],
+    pindex_urls: [],
+    proxy_base: require('path').join(require('os').homedir(), 'http'),
+    proxy_base_last_versions: require('path').join(braidfs_config_dir, 'proxy_base_last_versions')
+}
+
+// process config file
+try {
+    console.log(`loading config file at: ${braidfs_config_path}`)
+    Object.assign(config, JSON.parse(require('fs').readFileSync(braidfs_config_path, 'utf8')))
+} catch (e) { console.error(`Error loading config file:`, e.message) }
+
+// process command line args (override config)
 let argv = process.argv.slice(2)
 while (argv.length) {
     let a = argv.shift()
     if (a.match(/^\d+$/)) {
-        port = parseInt(a)
+        config.port = parseInt(a)
     } else if (a === '-pin') {
         let b = argv.shift()
         if (b === 'index') {
-            pindex_urls.push(argv.shift())
+            config.pindex_urls.push(argv.shift())
         } else {
-            pin_urls.push(b)
+            config.pin_urls.push(b)
         }
-    } else {
-        cookie = a
-        console.log(`cookie = ${cookie}`)
     }
 }
-console.log({ pin_urls, pindex_urls })
 
-for (let url of pin_urls) proxy_url(url)
-pindex_urls.forEach(async url => {
+// create directories
+require('fs').mkdirSync(config.proxy_base, { recursive: true })
+require('fs').mkdirSync(config.proxy_base_last_versions, { recursive: true })
+
+console.log({ pin_urls: config.pin_urls, pindex_urls: config.pindex_urls })
+for (let url of config.pin_urls) proxy_url(url)
+config.pindex_urls.forEach(async url => {
     let prefix = new URL(url).origin
     while (true) {
         let urls = await (await fetch(url)).json()
@@ -88,8 +101,8 @@ const server = http.createServer(async (req, res) => {
     braid_text.serve(req, res, { key: normalize_url(url) })
 });
 
-server.listen(port, () => {
-    console.log(`Proxy server started on port ${port}`);
+server.listen(config.port, () => {
+    console.log(`Proxy server started on port ${config.port}`);
     console.log('This proxy is only accessible from localhost');
 });
 
@@ -141,15 +154,13 @@ async function proxy_url(url) {
     console.log(`proxy_url: ${url}`)
 
     let path = url.replace(/^https?:\/\//, '')
-    let fullpath = require("path").join(proxy_base, path)
+    let fullpath = require("path").join(config.proxy_base, path)
 
     // if we're accessing /blah/index, it will be normalized to /blah,
     // but we still want to create a directory out of blah in this case
     if (wasnt_normal && !(await is_dir(fullpath))) await ensure_path(fullpath)
 
     await ensure_path(require("path").dirname(fullpath))
-
-    await require("fs").promises.mkdir(proxy_base_support, { recursive: true })
 
     async function get_fullpath() {
         let p = fullpath
@@ -180,7 +191,7 @@ async function proxy_url(url) {
             headers: {
                 "Merge-Type": "dt",
                 "Content-Type": 'text/plain',
-                ...(cookie ? { "Cookie": cookie } : {}),
+                ...config?.domains?.[(new URL(url)).hostname]?.auth_headers,
             },
             method: "PUT",
             retry: true,
@@ -195,7 +206,7 @@ async function proxy_url(url) {
 
         if (file_last_version === null) {
             try {
-                file_last_version = JSON.parse(await require('fs').promises.readFile(require('path').join(proxy_base_support, braid_text.encode_filename(url)), { encoding: 'utf8' }))
+                file_last_version = JSON.parse(await require('fs').promises.readFile(require('path').join(config.proxy_base_last_versions, braid_text.encode_filename(url)), { encoding: 'utf8' }))
                 file_last_text = (await braid_text.get(url, { version: file_last_version })).body
                 file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
             } catch (e) {
@@ -227,7 +238,7 @@ async function proxy_url(url) {
 
                     await braid_text.put(url, { version, parents, patches, peer })
 
-                    await require('fs').promises.writeFile(require('path').join(proxy_base_support, braid_text.encode_filename(url)), JSON.stringify(file_last_version))
+                    await require('fs').promises.writeFile(require('path').join(config.proxy_base_last_versions, braid_text.encode_filename(url)), JSON.stringify(file_last_version))
                 }
             }
             if (file_needs_writing) {
@@ -240,7 +251,7 @@ async function proxy_url(url) {
                     file_last_version = version
                     file_last_text = body
                     await require('fs').promises.writeFile(await get_fullpath(), file_last_text)
-                    await require('fs').promises.writeFile(require('path').join(proxy_base_support, braid_text.encode_filename(url)), JSON.stringify(file_last_version))
+                    await require('fs').promises.writeFile(require('path').join(config.proxy_base_last_versions, braid_text.encode_filename(url)), JSON.stringify(file_last_version))
                 }
             }
         }
@@ -275,8 +286,8 @@ async function proxy_url(url) {
 
     if (!proxy_url.chokidar) {
         proxy_url.chokidar = true
-        require('chokidar').watch(proxy_base).on('change', (path) => {
-            path = require('path').relative(proxy_base, path)
+        require('chokidar').watch(config.proxy_base).on('change', (path) => {
+            path = require('path').relative(config.proxy_base, path)
             console.log(`path changed: ${path}`)
 
             path = normalize_url(path)
@@ -310,7 +321,6 @@ async function proxy_url(url) {
             if (version.length == 0) return;
 
             // console.log(`local got: ${JSON.stringify({ version, parents, body, patches }, null, 4)}`)
-            // console.log(`cookie = ${cookie}`)
 
             signal_file_needs_writing()
 
