@@ -13,8 +13,8 @@ braid_text.db_folder = require('path').join(braidfs_config_dir, 'braid-text-db')
 
 let config = {
     port: 10000,
-    pin_urls: [],
-    pindex_urls: [],
+    sync_urls: [],
+    sync_index_urls: [],
     proxy_base: require('path').join(require('os').homedir(), 'http'),
     proxy_base_last_versions: require('path').join(braidfs_config_dir, 'proxy_base_last_versions')
 }
@@ -31,12 +31,12 @@ while (argv.length) {
     let a = argv.shift()
     if (a.match(/^\d+$/)) {
         config.port = parseInt(a)
-    } else if (a === '-pin') {
+    } else if (a === 'sync') {
         let b = argv.shift()
         if (b === 'index') {
-            config.pindex_urls.push(argv.shift())
+            config.sync_index_urls.push(argv.shift())
         } else {
-            config.pin_urls.push(b)
+            config.sync_urls.push(b)
         }
     }
 }
@@ -45,9 +45,9 @@ while (argv.length) {
 require('fs').mkdirSync(config.proxy_base, { recursive: true })
 require('fs').mkdirSync(config.proxy_base_last_versions, { recursive: true })
 
-console.log({ pin_urls: config.pin_urls, pindex_urls: config.pindex_urls })
-for (let url of config.pin_urls) proxy_url(url)
-config.pindex_urls.forEach(async url => {
+console.log({ sync_urls: config.sync_urls, sync_index_urls: config.sync_index_urls })
+for (let url of config.sync_urls) proxy_url(url)
+config.sync_index_urls.forEach(async url => {
     let prefix = new URL(url).origin
     while (true) {
         let urls = await (await fetch(url)).json()
