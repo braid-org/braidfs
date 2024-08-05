@@ -9,22 +9,20 @@ process.on("unhandledRejection", (x) => console.log(`unhandledRejection: ${x.sta
 process.on("uncaughtException", (x) => console.log(`uncaughtException: ${x.stack}`))
 
 let braidfs_config_dir = require('path').join(require('os').homedir(), '.braidfs')
-let braidfs_config_path = require('path').join(braidfs_config_dir, 'config.json')
-braid_text.db_folder = require('path').join(braidfs_config_dir, 'braid-text-db')
 
-let config = {
-    port: 10000,
-    sync_urls: [],
-    sync_index_urls: [],
-    proxy_base: require('path').join(require('os').homedir(), 'http'),
-    proxy_base_last_versions: require('path').join(braidfs_config_dir, 'proxy_base_last_versions')
+let braidfs_config_file = require('path').join(braidfs_config_dir, 'config.json')
+if (!require('fs').existsSync(braidfs_config_file)) {
+    require('fs').writeFileSync(braidfs_config_file, JSON.stringify({
+        port: 10000,
+        sync_urls: [],
+        sync_index_urls: [],
+        proxy_base: require('path').join(require('os').homedir(), 'http'),
+        proxy_base_last_versions: require('path').join(braidfs_config_dir, 'proxy_base_last_versions'),
+        braid_text_db: require('path').join(braidfs_config_dir, 'braid-text-db'),
+    }, null, 4))
 }
 
-// process config file
-try {
-    console.log(`loading config file at: ${braidfs_config_path}`)
-    Object.assign(config, JSON.parse(require('fs').readFileSync(braidfs_config_path, 'utf8')))
-} catch (e) { console.error(`Error loading config file:`, e.message) }
+let config = JSON.parse(require('fs').readFileSync(braidfs_config_file, 'utf8'))
 
 // process command line args (override config)
 let argv = process.argv.slice(2)
@@ -42,7 +40,8 @@ while (argv.length) {
     }
 }
 
-// create directories
+braid_text.db_folder = config.braid_text_db
+
 require('fs').mkdirSync(config.proxy_base, { recursive: true })
 require('fs').mkdirSync(config.proxy_base_last_versions, { recursive: true })
 
