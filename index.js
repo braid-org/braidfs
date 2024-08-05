@@ -9,6 +9,7 @@ process.on("unhandledRejection", (x) => console.log(`unhandledRejection: ${x.sta
 process.on("uncaughtException", (x) => console.log(`uncaughtException: ${x.stack}`))
 
 let braidfs_config_dir = require('path').join(require('os').homedir(), '.braidfs')
+require('fs').mkdirSync(braidfs_config_dir, { recursive: true })
 
 let braidfs_config_file = require('path').join(braidfs_config_dir, 'config.json')
 if (!require('fs').existsSync(braidfs_config_file)) {
@@ -19,6 +20,7 @@ if (!require('fs').existsSync(braidfs_config_file)) {
         proxy_base: require('path').join(require('os').homedir(), 'http'),
         proxy_base_last_versions: require('path').join(braidfs_config_dir, 'proxy_base_last_versions'),
         braid_text_db: require('path').join(braidfs_config_dir, 'braid-text-db'),
+        domains: { 'example.com': { auth_headers: { Cookie: "secret_pass" } } }
     }, null, 4))
 }
 
