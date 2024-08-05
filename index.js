@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 
 let http = require('http');
 let { diff_main } = require('./diff.js')

@@ -1,6 +1,6 @@
 {
   "name": "braidfs",
-  "version": "0.0.17",
+  "version": "0.0.18",
   "description": "braid technology synchronizing files and webpages",
   "author": "Braid Working Group",
   "repository": "braid-org/braidfs",
@@ -9,5 +9,8 @@
     "braid-http": "^0.3.20",
     "braid-text": "^0.0.26",
     "chokidar": "^3.6.0"
+  },
+  "bin": {
+    "braidfs": "./index.js"
   }
 }
