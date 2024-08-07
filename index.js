@@ -15,6 +15,7 @@ let braidfs_config_file = require('path').join(braidfs_config_dir, 'config.json'
 if (!require('fs').existsSync(braidfs_config_file)) {
     require('fs').writeFileSync(braidfs_config_file, JSON.stringify({
         port: 10000,
+        allow_remote_access: false,
         sync_urls: [],
         sync_index_urls: [],
         proxy_base: require('path').join(require('os').homedir(), 'http'),
@@ -28,6 +29,7 @@ let config = JSON.parse(require('fs').readFileSync(braidfs_config_file, 'utf8'))
 
 // process command line args (override config)
 let argv = process.argv.slice(2)
+let save_config = false
 while (argv.length) {
     let a = argv.shift()
     if (a.match(/^\d+$/)) {
@@ -39,8 +41,15 @@ while (argv.length) {
         } else {
             config.sync_urls.push(b)
         }
+    } else if (a === 'save') {
+        save_config = true
+    } else if (a === 'expose') {
+        config.allow_remote_access = true
+    } else if (a === 'unexpose') {
+        config.allow_remote_access = false
     }
 }
+if (save_config) require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
 
 braid_text.db_folder = config.braid_text_db
 
@@ -67,13 +76,16 @@ const server = http.createServer(async (req, res) => {
 
     if (req.url === '/favicon.ico') return;
 
-    // Security check: Allow only localhost access
-    const clientIp = req.socket.remoteAddress;
-    if (clientIp !== '127.0.0.1' && clientIp !== '::1') {
-        res.writeHead(403, { 'Content-Type': 'text/plain' });
-        res.end('Access denied: This proxy is only accessible from localhost');
-        return;
+    function only_allow_local_host() {
+        const clientIp = req.socket.remoteAddress;
+        if (clientIp !== '127.0.0.1' && clientIp !== '::1') {
+            res.writeHead(403, { 'Content-Type': 'text/plain' });
+            res.end('Access denied: only accessible from localhost');
+            throw 'done'
+        }
     }
+
+    if (!config.allow_remote_access) only_allow_local_host()
 
     // Free the CORS
     free_the_cors(req, res);
@@ -96,6 +108,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     let url = req.url.slice(1)
+    let is_external_link = url.match(/^https?:\/\//)
+
+    // we don't want to let remote people access external links for now
+    if (config.allow_remote_access && is_external_link) only_allow_local_host()
 
     proxy_url(url)
 
@@ -104,8 +120,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(config.port, () => {
-    console.log(`Proxy server started on port ${config.port}`);
-    console.log('This proxy is only accessible from localhost');
+    console.log(`server started on port ${config.port}`);
+    if (!config.allow_remote_access) console.log('!! only accessible from localhost !!');
 });
 
 ////////////////////////////////
@@ -155,7 +171,8 @@ async function proxy_url(url) {
 
     console.log(`proxy_url: ${url}`)
 
-    let path = url.replace(/^https?:\/\//, '')
+    let is_external_link = url.match(/^https?:\/\//)
+    let path = is_external_link ? url.replace(/^https?:\/\//, '') : `localhost/${url}`
     let fullpath = require("path").join(config.proxy_base, path)
 
     // if we're accessing /blah/index, it will be normalized to /blah,
@@ -189,7 +206,7 @@ async function proxy_url(url) {
     }
 
     async function send_out(stuff) {
-        await braid_fetch_wrapper(url, {
+        if (is_external_link) await braid_fetch_wrapper(url, {
             headers: {
                 "Merge-Type": "dt",
                 "Content-Type": 'text/plain',
@@ -245,11 +262,11 @@ async function proxy_url(url) {
             }
             if (file_needs_writing) {
                 file_needs_writing = false
-
-                console.log(`writing file ${await get_fullpath()}`)
-
                 let { version, body } = await braid_text.get(url, {})
                 if (!v_eq(version, file_last_version)) {
+
+                    console.log(`writing file ${await get_fullpath()}`)
+
                     file_last_version = version
                     file_last_text = body
                     await require('fs').promises.writeFile(await get_fullpath(), file_last_text)
@@ -260,7 +277,7 @@ async function proxy_url(url) {
         file_loop_pump_lock--
     }
 
-    braid_fetch_wrapper(url, {
+    if (is_external_link) braid_fetch_wrapper(url, {
         headers: {
             "Merge-Type": "dt",
             Accept: 'text/plain'
@@ -301,17 +318,19 @@ async function proxy_url(url) {
 
     // try a HEAD without subscribe to get the version
     let parents = null
-    try {
-        let head_res = await braid_fetch_wrapper(url, {
-            method: 'HEAD',
-            headers: { Accept: 'text/plain' },
-            retry: true,
-        })
-        parents = head_res.headers.get('version') ?
-            JSON.parse(`[${head_res.headers.get('version')}]`) :
-            null
-    } catch (e) {
-        console.log('HEAD failed: ', e)
+    if (is_external_link) {
+        try {
+            let head_res = await braid_fetch_wrapper(url, {
+                method: 'HEAD',
+                headers: { Accept: 'text/plain' },
+                retry: true,
+            })
+            parents = head_res.headers.get('version') ?
+                JSON.parse(`[${head_res.headers.get('version')}]`) :
+                null
+        } catch (e) {
+            console.log('HEAD failed: ', e)
+        }
     }
 
     // now get everything since then, and send it back..
