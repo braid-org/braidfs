@@ -1,6 +1,6 @@
 {
   "name": "braidfs",
-  "version": "0.0.21",
+  "version": "0.0.22",
   "description": "braid technology synchronizing files and webpages",
   "author": "Braid Working Group",
   "repository": "braid-org/braidfs",
@@ -12,5 +12,10 @@
   },
   "bin": {
     "braidfs": "./index.js"
-  }
+  },
+  "files": [
+    "index.js",
+    "editor.html",
+    "diff.js"
+  ]
 }

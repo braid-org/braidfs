@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 let http = require('http');
-let { diff_main } = require('./diff.js')
+let { diff_main } = require(require('path').join(__dirname, "diff.js"))
 let braid_text = require("braid-text");
 let braid_fetch = require('braid-http').fetch
 
@@ -93,7 +93,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.url.endsWith("?editor")) {
         res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-cache" })
-        require("fs").createReadStream("./editor.html").pipe(res)
+        require("fs").createReadStream(require('path').join(__dirname, "editor.html")).pipe(res)
         return
     }
 
