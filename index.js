@@ -56,6 +56,9 @@ braid_text.db_folder = config.braid_text_db
 require('fs').mkdirSync(config.proxy_base, { recursive: true })
 require('fs').mkdirSync(config.proxy_base_last_versions, { recursive: true })
 
+let host_to_protocol = {}
+let path_to_func = {}
+
 console.log({ sync_urls: config.sync_urls, sync_index_urls: config.sync_index_urls })
 for (let url of config.sync_urls) proxy_url(url)
 config.sync_index_urls.forEach(async url => {
@@ -70,6 +73,27 @@ config.sync_index_urls.forEach(async url => {
 braid_text.list().then(x => {
     for (let xx of x) proxy_url(xx)
 })
+
+require('chokidar').watch(config.proxy_base).
+    on('change', (path) => {
+        path = require('path').relative(config.proxy_base, path)
+        console.log(`path changed: ${path}`)
+
+        path = normalize_url(path)
+        // console.log(`normalized path: ${path}`)
+
+        path_to_func[path]()
+    }).
+    on('add', async (path) => {
+        path = require('path').relative(config.proxy_base, path)
+        console.log(`path added: ${path}`)
+
+        let url = null
+        if (path.startsWith('localhost/')) url = path.replace(/^localhost\//, '')
+        else url = host_to_protocol[path.split('/')[0]] + '//' + path
+
+        proxy_url(url)
+    })
 
 const server = http.createServer(async (req, res) => {
     console.log(`${req.method} ${req.url}`);
@@ -174,6 +198,11 @@ async function proxy_url(url) {
     let is_external_link = url.match(/^https?:\/\//)
     let path = is_external_link ? url.replace(/^https?:\/\//, '') : `localhost/${url}`
     let fullpath = require("path").join(config.proxy_base, path)
+
+    if (is_external_link) {
+        let u = new URL(url)
+        host_to_protocol[u.host] = u.protocol
+    }
 
     // if we're accessing /blah/index, it will be normalized to /blah,
     // but we still want to create a directory out of blah in this case
@@ -300,21 +329,7 @@ async function proxy_url(url) {
         })
     })
 
-    if (!proxy_url.path_to_func) proxy_url.path_to_func = {}
-    proxy_url.path_to_func[path] = signal_file_needs_reading
-
-    if (!proxy_url.chokidar) {
-        proxy_url.chokidar = true
-        require('chokidar').watch(config.proxy_base).on('change', (path) => {
-            path = require('path').relative(config.proxy_base, path)
-            console.log(`path changed: ${path}`)
-
-            path = normalize_url(path)
-            // console.log(`normalized path: ${path}`)
-
-            proxy_url.path_to_func[path]()
-        });
-    }
+    path_to_func[path] = signal_file_needs_reading
 
     // try a HEAD without subscribe to get the version
     let parents = null
