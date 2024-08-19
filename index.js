@@ -137,7 +137,15 @@ const server = http.createServer(async (req, res) => {
     // we don't want to let remote people access external links for now
     if (config.allow_remote_access && is_external_link) only_allow_local_host()
 
-    proxy_url(url)
+    let p = await proxy_url(url)
+
+    res.setHeader('Editable', !p.file_read_only)
+    if (req.method == "PUT" || req.method == "POST" || req.method == "PATCH") {
+        if (p.file_read_only) {
+            res.statusCode = 403 // Forbidden status code
+            return res.end('access denied')
+        }
+    }
 
     // Now serve the collaborative text!
     braid_text.serve(req, res, { key: normalize_url(url) })
@@ -147,12 +155,6 @@ server.listen(config.port, () => {
     console.log(`server started on port ${config.port}`);
     if (!config.allow_remote_access) console.log('!! only accessible from localhost !!');
 });
-
-////////////////////////////////
-
-function normalize_url(url) {
-    return url.replace(/(\/index|\/)+$/, '')
-}
 
 async function proxy_url(url) {
     let chain = proxy_url.chain || (proxy_url.chain = Promise.resolve())
@@ -190,8 +192,9 @@ async function proxy_url(url) {
     url = normalized_url
 
     if (!proxy_url.cache) proxy_url.cache = {}
-    if (proxy_url.cache[url]) return
-    proxy_url.cache[url] = true
+    if (proxy_url.cache[url]) return proxy_url.cache[url]
+    let self = {}
+    proxy_url.cache[url] = self
 
     console.log(`proxy_url: ${url}`)
 
@@ -220,6 +223,7 @@ async function proxy_url(url) {
     var char_counter = -1
     let file_last_version = null
     let file_last_text = null
+    self.file_read_only = null
     let file_needs_reading = true
     let file_needs_writing = null
     let file_loop_pump_lock = 0
@@ -258,7 +262,6 @@ async function proxy_url(url) {
                 file_last_text = (await braid_text.get(url, { version: file_last_version })).body
                 file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
             } catch (e) {
-                file_last_version = []
                 file_last_text = ''
                 file_needs_writing = true
             }
@@ -267,6 +270,8 @@ async function proxy_url(url) {
         while (file_needs_reading || file_needs_writing) {
             if (file_needs_reading) {
                 file_needs_reading = false
+
+                if (self.file_read_only === null) try { self.file_read_only = await is_read_only(await get_fullpath()) } catch (e) { }
 
                 let text = ''
                 try { text = await require('fs').promises.readFile(await get_fullpath(), { encoding: 'utf8' }) } catch (e) { }
@@ -296,11 +301,15 @@ async function proxy_url(url) {
 
                     console.log(`writing file ${await get_fullpath()}`)
 
+                    try { if (await is_read_only(await get_fullpath())) await set_read_only(await get_fullpath(), false) } catch (e) { }
+
                     file_last_version = version
                     file_last_text = body
                     await require('fs').promises.writeFile(await get_fullpath(), file_last_text)
                     await require('fs').promises.writeFile(require('path').join(config.proxy_base_last_versions, braid_text.encode_filename(url)), JSON.stringify(file_last_version))
                 }
+
+                if (await is_read_only(await get_fullpath()) !== self.file_read_only) await set_read_only(await get_fullpath(), self.file_read_only)
             }
         }
         file_loop_pump_lock--
@@ -309,7 +318,8 @@ async function proxy_url(url) {
     if (is_external_link) braid_fetch_wrapper(url, {
         headers: {
             "Merge-Type": "dt",
-            Accept: 'text/plain'
+            Accept: 'text/plain',
+            ...config?.domains?.[(new URL(url)).hostname]?.auth_headers,
         },
         subscribe: true,
         retry: true,
@@ -318,6 +328,9 @@ async function proxy_url(url) {
             if (cur.version.length) return cur.version
         },
         peer
+    }, (res) => {
+        self.file_read_only = res.headers.get('editable') === 'false'
+        signal_file_needs_writing()
     }).then(x => {
         x.subscribe(async update => {
             // console.log(`update: ${JSON.stringify(update, null, 4)}`)
@@ -337,12 +350,17 @@ async function proxy_url(url) {
         try {
             let head_res = await braid_fetch_wrapper(url, {
                 method: 'HEAD',
-                headers: { Accept: 'text/plain' },
+                headers: {
+                    Accept: 'text/plain',
+                    ...config?.domains?.[(new URL(url)).hostname]?.auth_headers,
+                },
                 retry: true,
             })
             parents = head_res.headers.get('version') ?
                 JSON.parse(`[${head_res.headers.get('version')}]`) :
                 null
+            self.file_read_only = head_res.headers.get('editable') === 'false'
+            signal_file_needs_writing()
         } catch (e) {
             console.log('HEAD failed: ', e)
         }
@@ -363,6 +381,14 @@ async function proxy_url(url) {
             send_out({ version, parents, body, patches, peer })
         },
     })
+
+    return self
+}
+
+////////////////////////////////
+
+function normalize_url(url) {
+    return url.replace(/(\/index|\/)+$/, '')
 }
 
 async function is_dir(p) {
@@ -446,7 +472,7 @@ function count_code_points(str) {
     return code_points
 }
 
-async function braid_fetch_wrapper(url, params) {
+async function braid_fetch_wrapper(url, params, connection_cb) {
     if (!params.retry) throw "wtf"
     var waitTime = 10
     if (params.subscribe) {
@@ -456,6 +482,7 @@ async function braid_fetch_wrapper(url, params) {
             if (params.signal?.aborted) return
             try {
                 var c = await braid_fetch(url, { ...params, parents: await params.parents?.() })
+                connection_cb(c)
                 c.subscribe((...args) => subscribe_handler?.(...args), on_error)
                 waitTime = 10
             } catch (e) {
@@ -486,5 +513,25 @@ async function braid_fetch_wrapper(url, params) {
 }
 
 function v_eq(v1, v2) {
-    return v1.length == v2.length && v1.every((x, i) => x == v2[i])
+    return v1.length === v2?.length && v1.every((x, i) => x == v2[i])
+}
+
+async function is_read_only(fullpath) {
+    const stats = await require('fs').promises.stat(fullpath)
+    return require('os').platform() === "win32" ?
+        !!(stats.mode & 0x1) :
+        !(stats.mode & 0o200)
+}
+
+async function set_read_only(fullpath, read_only) {
+    if (require('os').platform() === "win32") {
+        await new Promise((resolve, reject) => {
+            require("child_process").exec(`fsutil file setattr readonly "${fullpath}" ${!!read_only}`, (error) => error ? reject(error) : resolve())
+        })
+    } else {
+        let mode = (await require('fs').promises.stat(fullpath)).mode
+        if (read_only) mode &= ~0o222
+        else mode |= 0o200
+        await require('fs').promises.chmod(fullpath, mode)
+    }
 }
