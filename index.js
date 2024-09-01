@@ -157,33 +157,28 @@ server.listen(config.port, () => {
 });
 
 async function proxy_url(url) {
-    let chain = proxy_url.chain || (proxy_url.chain = Promise.resolve())
-
     async function ensure_path(path) {
-        // ensure that the path leading to our file exists..
-        await (chain = chain.then(async () => {
-            try {
-                await require("fs").promises.mkdir(path, { recursive: true })
-            } catch (e) {
-                let parts = path.split(require("path").sep)
-                for (let i = 1; i <= parts.length; i++) {
-                    let partial = require("path").join(...parts.slice(0, i))
+        try {
+            await require("fs").promises.mkdir(path, { recursive: true })
+        } catch (e) {
+            let parts = path.split(require("path").sep).slice(1)
+            for (let i = 1; i <= parts.length; i++) {
+                let partial = require("path").sep + require("path").join(...parts.slice(0, i))
 
-                    if (!(await is_dir(partial))) {
-                        let save = await require("fs").promises.readFile(partial)
+                if (!(await is_dir(partial))) {
+                    let save = await require("fs").promises.readFile(partial)
 
-                        await require("fs").promises.unlink(partial)
-                        await require("fs").promises.mkdir(path, { recursive: true })
+                    await require("fs").promises.unlink(partial)
+                    await require("fs").promises.mkdir(path, { recursive: true })
 
-                        while (await is_dir(partial))
-                            partial = require("path").join(partial, 'index')
+                    while (await is_dir(partial))
+                        partial = require("path").join(partial, 'index')
 
-                        await require("fs").promises.writeFile(partial, save)
-                        break
-                    }
+                    await require("fs").promises.writeFile(partial, save)
+                    break
                 }
             }
-        }))
+        }
     }
 
     // normalize url by removing any trailing /index/index/
@@ -192,197 +187,235 @@ async function proxy_url(url) {
     url = normalized_url
 
     if (!proxy_url.cache) proxy_url.cache = {}
-    if (proxy_url.cache[url]) return proxy_url.cache[url]
-    let self = {}
-    proxy_url.cache[url] = self
+    if (!proxy_url.chain) proxy_url.chain = Promise.resolve()
+    if (!proxy_url.cache[url]) proxy_url.cache[url] = proxy_url.chain = proxy_url.chain.then(async () => {
+        let self = {}
 
-    console.log(`proxy_url: ${url}`)
+        console.log(`proxy_url: ${url}`)
 
-    let is_external_link = url.match(/^https?:\/\//)
-    let path = is_external_link ? url.replace(/^https?:\/\//, '') : `localhost/${url}`
-    let fullpath = require("path").join(config.proxy_base, path)
+        let is_external_link = url.match(/^https?:\/\//)
+        let path = is_external_link ? url.replace(/^https?:\/\//, '') : `localhost/${url}`
+        let fullpath = require("path").join(config.proxy_base, path)
 
-    if (is_external_link) {
-        let u = new URL(url)
-        host_to_protocol[u.host] = u.protocol
-    }
-
-    // if we're accessing /blah/index, it will be normalized to /blah,
-    // but we still want to create a directory out of blah in this case
-    if (wasnt_normal && !(await is_dir(fullpath))) await ensure_path(fullpath)
-
-    await ensure_path(require("path").dirname(fullpath))
-
-    async function get_fullpath() {
-        let p = fullpath
-        while (await is_dir(p)) p = require("path").join(p, 'index')
-        return p
-    }
-
-    let peer = Math.random().toString(36).slice(2)
-    var char_counter = -1
-    let file_last_version = null
-    let file_last_text = null
-    self.file_read_only = null
-    let file_needs_reading = true
-    let file_needs_writing = null
-    let file_loop_pump_lock = 0
-
-    function signal_file_needs_reading() {
-        file_needs_reading = true
-        file_loop_pump()
-    }
-
-    function signal_file_needs_writing() {
-        file_needs_writing = true
-        file_loop_pump()
-    }
-
-    async function send_out(stuff) {
-        if (is_external_link) await braid_fetch_wrapper(url, {
-            headers: {
-                "Merge-Type": "dt",
-                "Content-Type": 'text/plain',
-                ...config?.domains?.[(new URL(url)).hostname]?.auth_headers,
-            },
-            method: "PUT",
-            retry: true,
-            ...stuff
-        })
-    }
-
-    file_loop_pump()
-    async function file_loop_pump() {
-        if (file_loop_pump_lock) return
-        file_loop_pump_lock++
-
-        if (file_last_version === null) {
-            try {
-                file_last_version = JSON.parse(await require('fs').promises.readFile(require('path').join(config.proxy_base_last_versions, braid_text.encode_filename(url)), { encoding: 'utf8' }))
-                file_last_text = (await braid_text.get(url, { version: file_last_version })).body
-                file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
-            } catch (e) {
-                file_last_text = ''
-                file_needs_writing = true
-            }
+        if (is_external_link) {
+            let u = new URL(url)
+            host_to_protocol[u.host] = u.protocol
         }
 
-        while (file_needs_reading || file_needs_writing) {
-            if (file_needs_reading) {
-                file_needs_reading = false
+        // if we're accessing /blah/index, it will be normalized to /blah,
+        // but we still want to create a directory out of blah in this case
+        if (wasnt_normal && !(await is_dir(fullpath))) await ensure_path(fullpath)
 
-                if (self.file_read_only === null) try { self.file_read_only = await is_read_only(await get_fullpath()) } catch (e) { }
+        await ensure_path(require("path").dirname(fullpath))
 
-                let text = ''
-                try { text = await require('fs').promises.readFile(await get_fullpath(), { encoding: 'utf8' }) } catch (e) { }
-
-                var patches = diff(file_last_text, text)
-                if (patches.length) {
-                    // convert from js-indicies to code-points
-                    char_counter += patches_to_code_points(patches, file_last_text)
-
-                    file_last_text = text
-
-                    var version = [peer + "-" + char_counter]
-                    var parents = file_last_version
-                    file_last_version = version
-
-                    send_out({ version, parents, patches, peer })
-
-                    await braid_text.put(url, { version, parents, patches, peer })
-
-                    await require('fs').promises.writeFile(require('path').join(config.proxy_base_last_versions, braid_text.encode_filename(url)), JSON.stringify(file_last_version))
-                }
-            }
-            if (file_needs_writing) {
-                file_needs_writing = false
-                let { version, body } = await braid_text.get(url, {})
-                if (!v_eq(version, file_last_version)) {
-
-                    console.log(`writing file ${await get_fullpath()}`)
-
-                    try { if (await is_read_only(await get_fullpath())) await set_read_only(await get_fullpath(), false) } catch (e) { }
-
-                    file_last_version = version
-                    file_last_text = body
-                    await require('fs').promises.writeFile(await get_fullpath(), file_last_text)
-                    await require('fs').promises.writeFile(require('path').join(config.proxy_base_last_versions, braid_text.encode_filename(url)), JSON.stringify(file_last_version))
-                }
-
-                if (await is_read_only(await get_fullpath()) !== self.file_read_only) await set_read_only(await get_fullpath(), self.file_read_only)
-            }
+        async function get_fullpath() {
+            let p = fullpath
+            while (await is_dir(p)) p = require("path").join(p, 'index')
+            return p
         }
-        file_loop_pump_lock--
-    }
 
-    if (is_external_link) braid_fetch_wrapper(url, {
-        headers: {
-            "Merge-Type": "dt",
-            Accept: 'text/plain',
-            ...config?.domains?.[(new URL(url)).hostname]?.auth_headers,
-        },
-        subscribe: true,
-        retry: true,
-        parents: async () => {
-            let cur = await braid_text.get(url, {})
-            if (cur.version.length) return cur.version
-        },
-        peer
-    }, (res) => {
-        self.file_read_only = res.headers.get('editable') === 'false'
-        signal_file_needs_writing()
-    }).then(x => {
-        x.subscribe(async update => {
-            // console.log(`update: ${JSON.stringify(update, null, 4)}`)
-            if (update.version.length == 0) return;
+        let peer = Math.random().toString(36).slice(2)
+        var char_counter = -1
+        let file_last_version = null
+        let file_last_text = null
+        self.file_read_only = null
+        let file_needs_reading = true
+        let file_needs_writing = null
+        let file_loop_pump_lock = 0
 
-            await braid_text.put(url, { ...update, peer, merge_type: 'dt' })
+        function signal_file_needs_reading() {
+            file_needs_reading = true
+            file_loop_pump()
+        }
 
-            signal_file_needs_writing()
-        })
-    })
+        function signal_file_needs_writing() {
+            file_needs_writing = true
+            file_loop_pump()
+        }
 
-    path_to_func[path] = signal_file_needs_reading
-
-    // try a HEAD without subscribe to get the version
-    let parents = null
-    if (is_external_link) {
-        try {
-            let head_res = await braid_fetch_wrapper(url, {
-                method: 'HEAD',
+        async function send_out(stuff) {
+            if (is_external_link) await braid_fetch_wrapper(url, {
                 headers: {
-                    Accept: 'text/plain',
+                    "Merge-Type": "dt",
+                    "Content-Type": 'text/plain',
                     ...config?.domains?.[(new URL(url)).hostname]?.auth_headers,
                 },
+                method: "PUT",
                 retry: true,
+                ...stuff
             })
-            parents = head_res.headers.get('version') ?
-                JSON.parse(`[${head_res.headers.get('version')}]`) :
-                null
-            self.file_read_only = head_res.headers.get('editable') === 'false'
-            signal_file_needs_writing()
-        } catch (e) {
-            console.log('HEAD failed: ', e)
         }
-    }
 
-    // now get everything since then, and send it back..
-    braid_text.get(url, {
-        parents,
-        merge_type: 'dt',
-        peer,
-        subscribe: async ({ version, parents, body, patches }) => {
-            if (version.length == 0) return;
+        path_to_func[path] = signal_file_needs_reading
 
-            // console.log(`local got: ${JSON.stringify({ version, parents, body, patches }, null, 4)}`)
+        file_loop_pump()
+        async function file_loop_pump() {
+            if (file_loop_pump_lock) return
+            file_loop_pump_lock++
 
-            signal_file_needs_writing()
+            if (file_last_version === null) {
+                try {
+                    file_last_version = JSON.parse(await require('fs').promises.readFile(require('path').join(config.proxy_base_last_versions, braid_text.encode_filename(url)), { encoding: 'utf8' }))
+                    file_last_text = (await braid_text.get(url, { version: file_last_version })).body
+                    file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
+                } catch (e) {
+                    file_last_text = ''
+                    file_needs_writing = true
+                }
+            }
 
-            send_out({ version, parents, body, patches, peer })
-        },
+            while (file_needs_reading || file_needs_writing) {
+                if (file_needs_reading) {
+                    file_needs_reading = false
+
+                    if (self.file_read_only === null) try { self.file_read_only = await is_read_only(await get_fullpath()) } catch (e) { }
+
+                    let text = ''
+                    try { text = await require('fs').promises.readFile(await get_fullpath(), { encoding: 'utf8' }) } catch (e) { }
+
+                    var patches = diff(file_last_text, text)
+                    if (patches.length) {
+                        // convert from js-indicies to code-points
+                        char_counter += patches_to_code_points(patches, file_last_text)
+
+                        file_last_text = text
+
+                        var version = [peer + "-" + char_counter]
+                        var parents = file_last_version
+                        file_last_version = version
+
+                        send_out({ version, parents, patches, peer })
+
+                        await braid_text.put(url, { version, parents, patches, peer })
+
+                        await require('fs').promises.writeFile(require('path').join(config.proxy_base_last_versions, braid_text.encode_filename(url)), JSON.stringify(file_last_version))
+                    }
+                }
+                if (file_needs_writing) {
+                    file_needs_writing = false
+                    let { version, body } = await braid_text.get(url, {})
+                    if (!v_eq(version, file_last_version)) {
+
+                        console.log(`writing file ${await get_fullpath()}`)
+
+                        try { if (await is_read_only(await get_fullpath())) await set_read_only(await get_fullpath(), false) } catch (e) { }
+
+                        file_last_version = version
+                        file_last_text = body
+                        await require('fs').promises.writeFile(await get_fullpath(), file_last_text)
+                        await require('fs').promises.writeFile(require('path').join(config.proxy_base_last_versions, braid_text.encode_filename(url)), JSON.stringify(file_last_version))
+                    }
+
+                    if (await is_read_only(await get_fullpath()) !== self.file_read_only) await set_read_only(await get_fullpath(), self.file_read_only)
+                }
+            }
+            file_loop_pump_lock--
+        }
+
+        // try a HEAD without subscribe to get the version
+        let parents = null
+        if (is_external_link) {
+            try {
+                let head_res = await braid_fetch_wrapper(url, {
+                    method: 'HEAD',
+                    headers: {
+                        Accept: 'text/plain',
+                        ...config?.domains?.[(new URL(url)).hostname]?.auth_headers,
+                    },
+                    retry: true,
+                })
+                parents = head_res.headers.get('version') ?
+                    JSON.parse(`[${head_res.headers.get('version')}]`) :
+                    null
+                self.file_read_only = head_res.headers.get('editable') === 'false'
+                signal_file_needs_writing()
+            } catch (e) {
+                console.log('HEAD failed: ', e)
+            }
+
+            // work here
+            console.log(`waiting_for_versions: ${parents}`)
+
+            let waiting_for_versions = Object.fromEntries(parents?.map(x => [x, true]) ?? [])
+            await new Promise(done => {
+                braid_fetch_wrapper(url, {
+                    headers: {
+                        "Merge-Type": "dt",
+                        Accept: 'text/plain',
+                        ...config?.domains?.[(new URL(url)).hostname]?.auth_headers,
+                    },
+                    subscribe: true,
+                    retry: true,
+                    parents: async () => {
+                        let cur = await braid_text.get(url, {})
+                        if (cur.version.length) {
+                            waiting_for_versions = Object.fromEntries(Object.keys(waiting_for_versions).map(x => {
+                                let [a, seq] = x.split('-')
+                                return [a, seq]
+                            }))
+                            for (let v of cur.version) {
+                                let [a, seq] = v.split('-')
+                                if (waiting_for_versions[a] <= seq) delete waiting_for_versions[a]
+                            }
+                            waiting_for_versions = Object.fromEntries(Object.entries(waiting_for_versions).map(x => [`${x[0]}-${x[1]}`, true]))
+
+                            if (done) {
+                                if (!Object.keys(waiting_for_versions).length) {
+                                    console.log('got everything we were waiting for..')
+                                    done()
+                                    done = null
+                                }
+                            }
+
+                            return cur.version
+                        }
+                    },
+                    peer
+                }, (res) => {
+                    self.file_read_only = res.headers.get('editable') === 'false'
+                    signal_file_needs_writing()
+                }).then(x => {
+                    x.subscribe(async update => {
+                        // console.log(`update: ${JSON.stringify(update, null, 4)}`)
+                        if (update.version.length == 0) return;
+                        if (update.version.length != 1) throw 'unexpected';
+
+                        await braid_text.put(url, { ...update, peer, merge_type: 'dt' })
+
+                        if (done) {
+                            delete waiting_for_versions[update.version[0]]
+                            if (!Object.keys(waiting_for_versions).length) {
+                                console.log('got everything we were waiting for..')
+                                done()
+                                done = null
+                            }
+                        }
+
+                        signal_file_needs_writing()
+                    })
+                })
+            })
+        }
+
+        // now get everything since then, and send it back..
+        braid_text.get(url, {
+            parents,
+            merge_type: 'dt',
+            peer,
+            subscribe: async ({ version, parents, body, patches }) => {
+                if (version.length == 0) return;
+
+                // console.log(`local got: ${JSON.stringify({ version, parents, body, patches }, null, 4)}`)
+
+                signal_file_needs_writing()
+
+                send_out({ version, parents, body, patches, peer })
+            },
+        })
+
+        return self
     })
-
-    return self
+    return await proxy_url.cache[url]
 }
 
 ////////////////////////////////
