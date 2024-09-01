@@ -336,7 +336,7 @@ async function proxy_url(url) {
             // console.log(`update: ${JSON.stringify(update, null, 4)}`)
             if (update.version.length == 0) return;
 
-            await braid_text.put(url, { ...update, peer })
+            await braid_text.put(url, { ...update, peer, merge_type: 'dt' })
 
             signal_file_needs_writing()
         })
