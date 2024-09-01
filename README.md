@@ -1,6 +1,9 @@
 # braidfs
-Proxy braid collaborative text pages as editable files on disk.
 
+Sync Braid URLs and website as files on disk.
+
+Like Dropbox (file sync), plus Google Docs (collaborative editing), all over
+HTTP.
 
 ## Installation
 
