@@ -28,28 +28,38 @@ if (!require('fs').existsSync(braidfs_config_file)) {
 let config = JSON.parse(require('fs').readFileSync(braidfs_config_file, 'utf8'))
 
 // process command line args (override config)
+console.log(`braidfs version: ${require('./package.json').version}`)
 let argv = process.argv.slice(2)
 let save_config = false
 while (argv.length) {
     let a = argv.shift()
     if (a.match(/^\d+$/)) {
         config.port = parseInt(a)
+        console.log(`setting port to ${config.port}`)
     } else if (a === 'sync') {
         let b = argv.shift()
         if (b === 'index') {
             config.sync_index_urls.push(argv.shift())
+            console.log(`syncing index url: ${config.sync_index_urls.slice(-1)[0]}`)
         } else {
             config.sync_urls.push(b)
+            console.log(`syncing url: ${config.sync_urls.slice(-1)[0]}`)
         }
     } else if (a === 'save') {
         save_config = true
+        console.log(`will save new config file`)
     } else if (a === 'expose') {
         config.allow_remote_access = true
+        console.log(`exposing server to the outside world`)
     } else if (a === 'unexpose') {
         config.allow_remote_access = false
+        console.log(`unexpose server from the outside world`)
     }
 }
-if (save_config) require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
+if (save_config) {
+    require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
+    console.log(`saved config file`)
+}
 
 braid_text.db_folder = config.braid_text_db
 
