@@ -77,6 +77,10 @@ braid_text.list().then(x => {
 require('chokidar').watch(config.proxy_base).
     on('change', (path) => {
         path = require('path').relative(config.proxy_base, path)
+
+        // Skip any temp files with a # in the name
+        if (path.includes('#')) return
+
         console.log(`path changed: ${path}`)
 
         path = normalize_url(path)
@@ -86,6 +90,10 @@ require('chokidar').watch(config.proxy_base).
     }).
     on('add', async (path) => {
         path = require('path').relative(config.proxy_base, path)
+
+        // Skip any temp files with a # in the name
+        if (path.includes('#')) return
+
         console.log(`path added: ${path}`)
 
         let url = null
