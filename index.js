@@ -19,7 +19,7 @@ if (!require('fs').existsSync(braidfs_config_file)) {
         sync_urls: [],
         sync_index_urls: [],
         proxy_base: require('path').join(require('os').homedir(), 'http'),
-        proxy_base_last_versions: require('path').join(braidfs_config_dir, 'proxy_base_last_versions'),
+        proxy_base_meta: require('path').join(braidfs_config_dir, 'proxy_base_meta'),
         braid_text_db: require('path').join(braidfs_config_dir, 'braid-text-db'),
         domains: { 'example.com': { auth_headers: { Cookie: "secret_pass" } } }
     }, null, 4))
@@ -56,6 +56,15 @@ while (argv.length) {
         console.log(`unexpose server from the outside world`)
     }
 }
+if (config.proxy_base_last_versions && !config.proxy_base_meta) {
+    config.proxy_base_meta = config.proxy_base_last_versions
+    delete config.proxy_base_last_versions
+    console.log((save_config ?
+        `updating config file "proxy_base_last_versions" to "proxy_base_meta": ` :
+        `config file "proxy_base_last_versions" being interpreted as "proxy_base_meta": `) +
+        config.proxy_base_meta)
+}
+
 if (save_config) {
     require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
     console.log(`saved config file`)
@@ -64,7 +73,7 @@ if (save_config) {
 braid_text.db_folder = config.braid_text_db
 
 require('fs').mkdirSync(config.proxy_base, { recursive: true })
-require('fs').mkdirSync(config.proxy_base_last_versions, { recursive: true })
+require('fs').mkdirSync(config.proxy_base_meta, { recursive: true })
 
 let host_to_protocol = {}
 let path_to_func = {}
@@ -235,6 +244,7 @@ async function proxy_url(url) {
         let peer = Math.random().toString(36).slice(2)
         var char_counter = -1
         let file_last_version = null
+        let file_last_digest = null
         let file_last_text = null
         self.file_read_only = null
         let file_needs_reading = true
@@ -273,13 +283,16 @@ async function proxy_url(url) {
 
             if (file_last_version === null) {
                 try {
-                    file_last_version = JSON.parse(await require('fs').promises.readFile(require('path').join(config.proxy_base_last_versions, braid_text.encode_filename(url)), { encoding: 'utf8' }))
+                    ({version: file_last_version, digest: file_last_digest} = JSON.parse(await require('fs').promises.readFile(require('path').join(config.proxy_base_meta, braid_text.encode_filename(url)), { encoding: 'utf8' })))
                     file_last_text = (await braid_text.get(url, { version: file_last_version })).body
                     file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
                 } catch (e) {
                     file_last_text = ''
                     file_needs_writing = true
                 }
+
+                // sanity check
+                if (file_last_version && require('crypto').createHash('sha256').update(file_last_text).digest('base64') != file_last_digest) throw new Error('file_last_text does not match file_last_digest')
             }
 
             while (file_needs_reading || file_needs_writing) {
@@ -306,7 +319,7 @@ async function proxy_url(url) {
 
                         await braid_text.put(url, { version, parents, patches, peer })
 
-                        await require('fs').promises.writeFile(require('path').join(config.proxy_base_last_versions, braid_text.encode_filename(url)), JSON.stringify(file_last_version))
+                        await require('fs').promises.writeFile(require('path').join(config.proxy_base_meta, braid_text.encode_filename(url)), JSON.stringify({version: file_last_version, digest: require('crypto').createHash('sha256').update(file_last_text).digest('base64')}))
                     }
                 }
                 if (file_needs_writing) {
@@ -321,7 +334,7 @@ async function proxy_url(url) {
                         file_last_version = version
                         file_last_text = body
                         await require('fs').promises.writeFile(await get_fullpath(), file_last_text)
-                        await require('fs').promises.writeFile(require('path').join(config.proxy_base_last_versions, braid_text.encode_filename(url)), JSON.stringify(file_last_version))
+                        await require('fs').promises.writeFile(require('path').join(config.proxy_base_meta, braid_text.encode_filename(url)), JSON.stringify({version: file_last_version, digest: require('crypto').createHash('sha256').update(file_last_text).digest('base64')}))
                     }
 
                     if (await is_read_only(await get_fullpath()) !== self.file_read_only) await set_read_only(await get_fullpath(), self.file_read_only)
