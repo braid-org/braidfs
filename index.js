@@ -283,7 +283,9 @@ async function proxy_url(url) {
 
             if (file_last_version === null) {
                 try {
-                    ({version: file_last_version, digest: file_last_digest} = JSON.parse(await require('fs').promises.readFile(require('path').join(config.proxy_base_meta, braid_text.encode_filename(url)), { encoding: 'utf8' })))
+                    let meta = JSON.parse(await require('fs').promises.readFile(require('path').join(config.proxy_base_meta, braid_text.encode_filename(url)), { encoding: 'utf8' }))
+                    let _ = ({version: file_last_version, digest: file_last_digest} = Array.isArray(meta) ? {version: meta} : meta)
+
                     file_last_text = (await braid_text.get(url, { version: file_last_version })).body
                     file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
                 } catch (e) {
@@ -292,7 +294,7 @@ async function proxy_url(url) {
                 }
 
                 // sanity check
-                if (file_last_version && require('crypto').createHash('sha256').update(file_last_text).digest('base64') != file_last_digest) throw new Error('file_last_text does not match file_last_digest')
+                if (file_last_digest && require('crypto').createHash('sha256').update(file_last_text).digest('base64') != file_last_digest) throw new Error('file_last_text does not match file_last_digest')
             }
 
             while (file_needs_reading || file_needs_writing) {
