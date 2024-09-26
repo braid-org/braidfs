@@ -262,16 +262,20 @@ async function proxy_url(url) {
         }
 
         async function send_out(stuff) {
-            if (is_external_link) await braid_fetch_wrapper(url, {
-                headers: {
-                    "Merge-Type": "dt",
-                    "Content-Type": 'text/plain',
-                    ...config?.domains?.[(new URL(url)).hostname]?.auth_headers,
-                },
-                method: "PUT",
-                retry: true,
-                ...stuff
-            })
+            if (is_external_link) {
+                try {
+                    await braid_fetch(url, {
+                        headers: {
+                            "Merge-Type": "dt",
+                            "Content-Type": 'text/plain',
+                            ...config?.domains?.[(new URL(url)).hostname]?.auth_headers,
+                        },
+                        method: "PUT",
+                        retry: true,
+                        ...stuff
+                    })
+                } catch (e) { crash(e) }
+            }
         }
 
         path_to_func[path] = signal_file_needs_reading
@@ -349,7 +353,7 @@ async function proxy_url(url) {
         let parents = null
         if (is_external_link) {
             try {
-                let head_res = await braid_fetch_wrapper(url, {
+                let head_res = await braid_fetch(url, {
                     method: 'HEAD',
                     headers: {
                         Accept: 'text/plain',
@@ -371,7 +375,7 @@ async function proxy_url(url) {
 
             let waiting_for_versions = Object.fromEntries(parents?.map(x => [x, true]) ?? [])
             await new Promise(done => {
-                braid_fetch_wrapper(url, {
+                braid_fetch(url, {
                     headers: {
                         "Merge-Type": "dt",
                         Accept: 'text/plain',
@@ -403,10 +407,11 @@ async function proxy_url(url) {
                             return cur.version
                         }
                     },
-                    peer
-                }, (res) => {
-                    self.file_read_only = res.headers.get('editable') === 'false'
-                    signal_file_needs_writing()
+                    peer,
+                    onRes: (res) => {
+                        self.file_read_only = res.headers.get('editable') === 'false'
+                        signal_file_needs_writing()
+                    }
                 }).then(x => {
                     x.subscribe(async update => {
                         // console.log(`update: ${JSON.stringify(update, null, 4)}`)
@@ -425,8 +430,8 @@ async function proxy_url(url) {
                         }
 
                         signal_file_needs_writing()
-                    })
-                })
+                    }, crash)
+                }).catch(crash)
             })
         }
 
@@ -538,46 +543,6 @@ function count_code_points(str) {
     return code_points
 }
 
-async function braid_fetch_wrapper(url, params, connection_cb) {
-    if (!params.retry) throw "wtf"
-    var waitTime = 10
-    if (params.subscribe) {
-        var subscribe_handler = null
-        connect()
-        async function connect() {
-            if (params.signal?.aborted) return
-            try {
-                var c = await braid_fetch(url, { ...params, parents: await params.parents?.() })
-                connection_cb(c)
-                c.subscribe((...args) => subscribe_handler?.(...args), on_error)
-                waitTime = 10
-            } catch (e) {
-                on_error(e)
-            }
-        }
-        function on_error(e) {
-            console.log(`eee[url:${url}] = ` + e.stack)
-            setTimeout(connect, waitTime)
-            waitTime = Math.min(waitTime * 2, 3000)
-        }
-        return { subscribe: handler => { subscribe_handler = handler } }
-    } else {
-        return new Promise((done) => {
-            send()
-            async function send() {
-                try {
-                    var res = await braid_fetch(url, params)
-                    if (res.status !== 200) throw "status not 200: " + res.status
-                    done(res)
-                } catch (e) {
-                    setTimeout(send, waitTime)
-                    waitTime = Math.min(waitTime * 2, 3000)
-                }
-            }
-        })
-    }
-}
-
 function v_eq(v1, v2) {
     return v1.length === v2?.length && v1.every((x, i) => x == v2[i])
 }
@@ -600,4 +565,9 @@ async function set_read_only(fullpath, read_only) {
         else mode |= 0o200
         await require('fs').promises.chmod(fullpath, mode)
     }
+}
+
+function crash(e) {
+    console.error('' + e.stack)
+    process.exit(1)
 }
