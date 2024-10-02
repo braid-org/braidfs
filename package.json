@@ -1,12 +1,12 @@
 {
   "name": "braidfs",
-  "version": "0.0.30",
+  "version": "0.0.31",
   "description": "braid technology synchronizing files and webpages",
   "author": "Braid Working Group",
   "repository": "braid-org/braidfs",
   "homepage": "https://braid.org",
   "dependencies": {
-    "braid-http": "^1.0.5",
+    "braid-http": "^1.0.7",
     "braid-text": "^0.1.0",
     "chokidar": "^3.6.0"
   },

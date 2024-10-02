@@ -383,6 +383,7 @@ async function proxy_url(url) {
                     },
                     subscribe: true,
                     retry: true,
+                    heartbeats: 120,
                     parents: async () => {
                         let cur = await braid_text.get(url, {})
                         if (cur.version.length) {
