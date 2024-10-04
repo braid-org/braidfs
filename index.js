@@ -94,7 +94,7 @@ braid_text.list().then(x => {
 })
 
 require('chokidar').watch(config.proxy_base).
-    on('change', (path) => {
+    on('change', async (path) => {
         path = require('path').relative(config.proxy_base, path)
 
         // Skip any temp files with a # in the name
@@ -105,7 +105,7 @@ require('chokidar').watch(config.proxy_base).
         path = normalize_url(path)
         // console.log(`normalized path: ${path}`)
 
-        path_to_func[path]()
+        ;(await path_to_func[path])()
     }).
     on('add', async (path) => {
         path = require('path').relative(config.proxy_base, path)
@@ -117,7 +117,7 @@ require('chokidar').watch(config.proxy_base).
 
         let url = null
         if (path.startsWith('localhost/')) url = path.replace(/^localhost\//, '')
-        else url = host_to_protocol[path.split('/')[0]] + '//' + path
+        else url = (host_to_protocol[path.split('/')[0]] ?? (path.startsWith('localhost') ? 'http:' : 'https:')) + '//' + path
 
         proxy_url(url)
     })
@@ -213,6 +213,18 @@ async function proxy_url(url) {
     let wasnt_normal = normalized_url != url
     url = normalized_url
 
+    let is_external_link = url.match(/^https?:\/\//)
+    let path = is_external_link ? url.replace(/^https?:\/\//, '') : `localhost/${url}`
+    let fullpath = require("path").join(config.proxy_base, path)
+
+    if (is_external_link) {
+        let u = new URL(url)
+        host_to_protocol[u.host] = u.protocol
+    }
+
+    let set_path_to_func
+    path_to_func[path] = new Promise(done => set_path_to_func = done)
+
     if (!proxy_url.cache) proxy_url.cache = {}
     if (!proxy_url.chain) proxy_url.chain = Promise.resolve()
     if (!proxy_url.cache[url]) proxy_url.cache[url] = proxy_url.chain = proxy_url.chain.then(async () => {
@@ -220,14 +232,6 @@ async function proxy_url(url) {
 
         console.log(`proxy_url: ${url}`)
 
-        let is_external_link = url.match(/^https?:\/\//)
-        let path = is_external_link ? url.replace(/^https?:\/\//, '') : `localhost/${url}`
-        let fullpath = require("path").join(config.proxy_base, path)
-
-        if (is_external_link) {
-            let u = new URL(url)
-            host_to_protocol[u.host] = u.protocol
-        }
 
         // if we're accessing /blah/index, it will be normalized to /blah,
         // but we still want to create a directory out of blah in this case
@@ -278,7 +282,7 @@ async function proxy_url(url) {
             }
         }
 
-        path_to_func[path] = signal_file_needs_reading
+        set_path_to_func(signal_file_needs_reading)
 
         file_loop_pump()
         async function file_loop_pump() {
@@ -293,6 +297,7 @@ async function proxy_url(url) {
                     file_last_text = (await braid_text.get(url, { version: file_last_version })).body
                     file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
                 } catch (e) {
+                    file_last_version = []
                     file_last_text = ''
                     file_needs_writing = true
                 }
@@ -373,7 +378,13 @@ async function proxy_url(url) {
             // work here
             console.log(`waiting_for_versions: ${parents}`)
 
-            let waiting_for_versions = Object.fromEntries(parents?.map(x => [x, true]) ?? [])
+            let waiting_for_versions = {}
+            for (let p of parents ?? []) {
+                let [a, seq] = p.split('-')
+                if (seq > (waiting_for_versions[a] ?? -1))
+                    waiting_for_versions[a] = seq
+            }
+
             await new Promise(done => {
                 braid_fetch(url, {
                     headers: {
@@ -387,19 +398,13 @@ async function proxy_url(url) {
                     parents: async () => {
                         let cur = await braid_text.get(url, {})
                         if (cur.version.length) {
-                            waiting_for_versions = Object.fromEntries(Object.keys(waiting_for_versions).map(x => {
-                                let [a, seq] = x.split('-')
-                                return [a, seq]
-                            }))
-                            for (let v of cur.version) {
-                                let [a, seq] = v.split('-')
-                                if (waiting_for_versions[a] <= seq) delete waiting_for_versions[a]
-                            }
-                            waiting_for_versions = Object.fromEntries(Object.entries(waiting_for_versions).map(x => [`${x[0]}-${x[1]}`, true]))
-
                             if (done) {
+                                for (let v of cur.version) {
+                                    let [a, seq] = v.split('-')
+                                    if (waiting_for_versions[a] <= seq) delete waiting_for_versions[a]
+                                }
                                 if (!Object.keys(waiting_for_versions).length) {
-                                    console.log('got everything we were waiting for..')
+                                    console.log('got everything we were waiting for.')
                                     done()
                                     done = null
                                 }
@@ -422,7 +427,8 @@ async function proxy_url(url) {
                         await braid_text.put(url, { ...update, peer, merge_type: 'dt' })
 
                         if (done) {
-                            delete waiting_for_versions[update.version[0]]
+                            let [a, seq] = update.version[0].split('-')
+                            if (waiting_for_versions[a] <= seq) delete waiting_for_versions[a]
                             if (!Object.keys(waiting_for_versions).length) {
                                 console.log('got everything we were waiting for..')
                                 done()
