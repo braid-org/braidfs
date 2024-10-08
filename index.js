@@ -223,7 +223,7 @@ async function proxy_url(url) {
     }
 
     let set_path_to_func
-    path_to_func[path] = new Promise(done => set_path_to_func = done)
+    if (!path_to_func[path]) path_to_func[path] = new Promise(done => set_path_to_func = done)
 
     if (!proxy_url.cache) proxy_url.cache = {}
     if (!proxy_url.chain) proxy_url.chain = Promise.resolve()
@@ -297,9 +297,11 @@ async function proxy_url(url) {
                     file_last_text = (await braid_text.get(url, { version: file_last_version })).body
                     file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
                 } catch (e) {
+                    file_needs_writing = true
                     file_last_version = []
                     file_last_text = ''
-                    file_needs_writing = true
+                    await require('fs').promises.writeFile(await get_fullpath(), file_last_text)
+                    await require('fs').promises.writeFile(require('path').join(config.proxy_base_meta, braid_text.encode_filename(url)), JSON.stringify({version: file_last_version, digest: require('crypto').createHash('sha256').update(file_last_text).digest('base64')}))
                 }
 
                 // sanity check
