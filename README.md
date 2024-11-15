@@ -1,9 +1,8 @@
 # braidfs
 
-Sync Braid URLs and website as files on disk.
+Sync Braid URLs as files on disk.
 
-Like Dropbox (file sync), plus Google Docs (collaborative editing), all over
-HTTP.
+Like Dropbox (file sync), plus Google Docs (collaborative editing), all over HTTP.
 
 ## Installation
 
@@ -15,49 +14,68 @@ npm install -g braidfs
 
 ## Usage
 
-To start braidfs, run the following command:
+To start the braidfs server:
 
 ```
-braidfs [port] [-pin <url>] [-pin index <url>]
+braidfs serve
 ```
 
-- `[port]`: Optional. Specify the port number (default is 10000).
-- `-pin <url>`: Pin a specific URL for synchronization.
-- `-pin index <url>`: Pin an index URL that contains a list of URLs to synchronize.
-
-Example:
+To sync a URL:
 
 ```
-braidfs 8080 -pin https://example.com/document.txt -pin index https://example.com/index.json
+braidfs sync <url>
 ```
+
+When you run `braidfs sync <url>`, it creates a local file mirroring the content at that URL. The local file path is determined by the URL structure. For example:
+
+- If you sync `https://example.com/path/file.txt`
+- It creates a local file at `~/http/example.com/path/file.txt`
+
+To unsync a URL:
+
+```
+braidfs unsync <url>
+```
+
+## Accessing the Server
+
+The braidfs server runs on `http://localhost:10000` by default and provides the following endpoints:
+
+- `/<url>`: Synchronizes the specified URL: creates a local file, and provides a Braid-HTTP interface
+- `/.braidfs/config`: Displays the current configuration
+- `/.braidfs/errors`: Shows the error log
+
+Accessing a URL through the proxy (e.g., `http://localhost:10000/https://example.com/file.txt`) will automatically add it to the set of synced URLs, similar to using `braidfs sync <url>`.
 
 ## Configuration
 
-braidfs looks for a configuration file at `~/.braidfs/config.json`. You can set the following options:
+braidfs looks for a configuration file at `~/http/.braidfs/config`. You can set the following options:
 
-- `port`: The port number for the proxy server.
-- `pin_urls`: An array of URLs to pin for synchronization.
-- `pindex_urls`: An array of index URLs containing lists of URLs to synchronize.
-- `proxy_base`: The base directory for storing proxied files (default is `~/http`).
+- `port`: The port number for the proxy server (default: 10000)
+- `sync`: An object where the keys are URLs to sync, and the values are simply "true"
+- `domains`: An object for setting domain-specific configurations, including authentication headers
 
 Example `config.json`:
 
 ```json
 {
-  "port": 9000,
-  "pin_urls": ["https://example.com/document1.txt", "https://example.com/document2.txt"],
-  "pindex_urls": ["https://example.com/index.json"],
-  "proxy_base": "/path/to/custom/proxy/directory"
+  "port": 10000,
+  "sync": {
+    "https://example.com/document1.txt": true,
+    "https://example.com/document2.txt": true
+  },
+  "domains": {
+    "example.com": {
+      "auth_headers": {
+        "Cookie": "secret_pass"
+      }
+    }
+  }
 }
 ```
 
-## Accessing the Proxy
-
-The proxy only allows connections from localhost for security reasons.
-
-- `/pages`: Shows all the proxied URLs
-- `/URL`: Proxies the specified URL and creates a file in `proxy_base/URL`
+The `domains` configuration allows you to set authentication headers for specific domains. In the example above, any requests to `example.com` will include the specified `Cookie` header.
 
 ## Security
 
-braidfs is designed to run locally and only accepts connections from localhost (127.0.0.1 or ::1) for security reasons.
+braidfs is designed to run locally and only accepts connections from localhost (127.0.0.1 or ::1) for security reasons. The `domains` configuration enables secure communication with servers that require authentication by allowing you to set domain-specific headers.

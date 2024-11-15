@@ -1,226 +1,224 @@
 #!/usr/bin/env node
 
-let http = require('http');
-let { diff_main } = require(require('path').join(__dirname, "diff.js"))
-let braid_text = require("braid-text");
+console.log(`braidfs version: ${require(`${__dirname}/package.json`).version}`)
+
+let { diff_main } = require(`${__dirname}/diff.js`)
+let braid_text = require("braid-text")
 let braid_fetch = require('braid-http').fetch
 
 process.on("unhandledRejection", (x) => console.log(`unhandledRejection: ${x.stack}`))
 process.on("uncaughtException", (x) => console.log(`uncaughtException: ${x.stack}`))
 
-let braidfs_config_dir = require('path').join(require('os').homedir(), '.braidfs')
-require('fs').mkdirSync(braidfs_config_dir, { recursive: true })
+let proxy_base = `${require('os').homedir()}/http`
+let braidfs_config_dir =`${proxy_base}/.braidfs`
+let braidfs_config_file = `${braidfs_config_dir}/config`
+let proxy_base_meta = `${braidfs_config_dir}/proxy_base_meta`
+braid_text.db_folder = `${braidfs_config_dir}/braid-text-db`
+let trash = `${braidfs_config_dir}/trash`
 
-let braidfs_config_file = require('path').join(braidfs_config_dir, 'config.json')
-if (!require('fs').existsSync(braidfs_config_file)) {
-    require('fs').writeFileSync(braidfs_config_file, JSON.stringify({
-        port: 10000,
-        allow_remote_access: false,
-        sync_urls: [],
-        sync_index_urls: [],
-        proxy_base: require('path').join(require('os').homedir(), 'http'),
-        proxy_base_meta: require('path').join(braidfs_config_dir, 'proxy_base_meta'),
-        braid_text_db: require('path').join(braidfs_config_dir, 'braid-text-db'),
-        domains: { 'example.com': { auth_headers: { Cookie: "secret_pass" } } }
-    }, null, 4))
-}
-
-let config = JSON.parse(require('fs').readFileSync(braidfs_config_file, 'utf8'))
-
-// process command line args (override config)
-console.log(`braidfs version: ${require('./package.json').version}`)
-let argv = process.argv.slice(2)
-let save_config = false
-while (argv.length) {
-    let a = argv.shift()
-    if (a.match(/^\d+$/)) {
-        config.port = parseInt(a)
-        console.log(`setting port to ${config.port}`)
-    } else if (a === 'sync') {
-        let b = argv.shift()
-        if (b === 'index') {
-            config.sync_index_urls.push(argv.shift())
-            console.log(`syncing index url: ${config.sync_index_urls.slice(-1)[0]}`)
-        } else {
-            config.sync_urls.push(b)
-            console.log(`syncing url: ${config.sync_urls.slice(-1)[0]}`)
-        }
-    } else if (a === 'save') {
-        save_config = true
-        console.log(`will save new config file`)
-    } else if (a === 'expose') {
-        config.allow_remote_access = true
-        console.log(`exposing server to the outside world`)
-    } else if (a === 'unexpose') {
-        config.allow_remote_access = false
-        console.log(`unexpose server from the outside world`)
-    }
-}
-if (config.proxy_base_last_versions && !config.proxy_base_meta) {
-    config.proxy_base_meta = config.proxy_base_last_versions
-    delete config.proxy_base_last_versions
-    console.log((save_config ?
-        `updating config file "proxy_base_last_versions" to "proxy_base_meta": ` :
-        `config file "proxy_base_last_versions" being interpreted as "proxy_base_meta": `) +
-        config.proxy_base_meta)
-}
-
-if (save_config) {
-    require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
-    console.log(`saved config file`)
-}
-
-braid_text.db_folder = config.braid_text_db
-
-require('fs').mkdirSync(config.proxy_base, { recursive: true })
-require('fs').mkdirSync(config.proxy_base_meta, { recursive: true })
-
-let host_to_protocol = {}
+let config = null
 let path_to_func = {}
 
-console.log({ sync_urls: config.sync_urls, sync_index_urls: config.sync_index_urls })
-for (let url of config.sync_urls) proxy_url(url)
-config.sync_index_urls.forEach(async url => {
-    let prefix = new URL(url).origin
-    while (true) {
-        let urls = await (await fetch(url)).json()
-        for (let url of urls) proxy_url(prefix + url)
-        await new Promise(done => setTimeout(done, 1000 * 60 * 60))
+if (require('fs').existsSync(proxy_base)) {
+    try {
+        config = JSON.parse(require('fs').readFileSync(braidfs_config_file, 'utf8'))
+    } catch (e) {
+        return console.log(`Cannot parse the configuration file at: ${braidfs_config_file}`)
     }
-})
+} else {
+    config = {
+        port: 10000,
+        sync: {},
+        domains: { 'example.com': { auth_headers: { Cookie: "secret_pass" } } }
+    }
+    require('fs').mkdirSync(braidfs_config_dir, { recursive: true })
+    require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
+}
 
-braid_text.list().then(x => {
-    for (let xx of x) proxy_url(xx)
-})
+require('fs').mkdirSync(proxy_base_meta, { recursive: true })
+require('fs').mkdirSync(trash, { recursive: true })
 
-require('chokidar').watch(config.proxy_base).
-    on('change', async (path) => {
-        path = require('path').relative(config.proxy_base, path)
-
-        // Skip any temp files with a # in the name
-        if (path.includes('#')) return
-
-        console.log(`path changed: ${path}`)
-
-        path = normalize_url(path)
-        // console.log(`normalized path: ${path}`)
-
-        ;(await path_to_func[path])()
-    }).
-    on('add', async (path) => {
-        path = require('path').relative(config.proxy_base, path)
-
-        // Skip any temp files with a # in the name
-        if (path.includes('#')) return
-
-        console.log(`path added: ${path}`)
-
-        let url = null
-        if (path.startsWith('localhost/')) url = path.replace(/^localhost\//, '')
-        else url = (host_to_protocol[path.split('/')[0]] ?? (path.startsWith('localhost') ? 'http:' : 'https:')) + '//' + path
-
-        proxy_url(url)
+// process command line args
+let argv = process.argv.slice(2)
+if (argv.length === 1 && argv[0] === 'serve') {
+    return main()
+} else if (argv.length && argv.length % 2 == 0 && argv.every((x, i) => i % 2 != 0 || x.match(/^(sync|unsync)$/))) {
+    let operations = []
+    for (let i = 0; i < argv.length; i += 2) {
+        let operation = argv[i]
+        let url = argv[i + 1]
+        if (!url.match(/^https?:\/\//)) {
+            if (url.startsWith('/')) url = require('path').relative(proxy_base, url)
+            url = `https://${url}`
+        }
+        console.log(`${operation}ing ${url}`)
+        operations.push({ operation, url })
+    }
+    return Promise.all(operations.map(({ operation, url }) => 
+        braid_fetch(`http://localhost:${config.port}/.braidfs/config`, {
+            method: 'PUT',
+            patches: [{
+                unit: 'json',
+                range: `sync[${JSON.stringify(url)}]`,
+                content: operation === 'sync' ? 'true' : ''
+            }]
+        }).then(() => console.log(`${operation}ed: ${url}`))
+    )).then(() => console.log('All operations completed successfully.'))
+    .catch(() => {
+        return console.log(`The braidfs server does not appear to be running.
+You can run it with:
+> braidfs serve${process.platform === 'darwin' ? `
+or in the background with:
+> launchctl submit -l org.braid.braidfs -- braidfs serve` :
+''}`)
     })
+} else {
+    return console.log(`Usage:
+    braidfs serve
+    braidfs sync <URL>
+    braidfs unsync <URL>${process.platform === 'darwin' ? `
+To run server in background:
+    launchctl submit -l org.braid.braidfs -- braidfs serve` :
+''}`)
+}
 
-const server = http.createServer(async (req, res) => {
-    console.log(`${req.method} ${req.url}`);
+async function main() {
+    require('http').createServer(async (req, res) => {
+        console.log(`${req.method} ${req.url}`)
 
-    if (req.url === '/favicon.ico') return;
+        if (req.url === '/favicon.ico') return
 
-    function only_allow_local_host() {
-        const clientIp = req.socket.remoteAddress;
-        if (clientIp !== '127.0.0.1' && clientIp !== '::1') {
-            res.writeHead(403, { 'Content-Type': 'text/plain' });
-            res.end('Access denied: only accessible from localhost');
-            throw 'done'
+        if (req.socket.remoteAddress !== '127.0.0.1' && req.socket.remoteAddress !== '::1') {
+            res.writeHead(403, { 'Content-Type': 'text/plain' })
+            return res.end('Access denied: only accessible from localhost')
         }
-    }
 
-    if (!config.allow_remote_access) only_allow_local_host()
+        // Free the CORS
+        free_the_cors(req, res)
+        if (req.method === 'OPTIONS') return
 
-    // Free the CORS
-    free_the_cors(req, res);
-    if (req.method === 'OPTIONS') return;
+        let url = req.url.slice(1)
+        let is_external_link = url.match(/^https?:\/\//)
 
-    if (req.url.endsWith("?editor")) {
-        res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-cache" })
-        require("fs").createReadStream(require('path').join(__dirname, "editor.html")).pipe(res)
-        return
-    }
-
-    if (req.url === '/pages') {
-        var pages = await braid_text.list()
-        res.writeHead(200, {
-            "Content-Type": "application/json",
-            "Access-Control-Expose-Headers": "*"
-        })
-        res.end(JSON.stringify(pages))
-        return
-    }
-
-    let url = req.url.slice(1)
-    let is_external_link = url.match(/^https?:\/\//)
-
-    // we don't want to let remote people access external links for now
-    if (config.allow_remote_access && is_external_link) only_allow_local_host()
-
-    let p = await proxy_url(url)
-
-    res.setHeader('Editable', !p.file_read_only)
-    if (req.method == "PUT" || req.method == "POST" || req.method == "PATCH") {
-        if (p.file_read_only) {
-            res.statusCode = 403 // Forbidden status code
-            return res.end('access denied')
+        if (!is_external_link && url !== '.braidfs/config' && url != '.braidfs/errors') {
+            res.writeHead(404, { 'Content-Type': 'text/plain' })
+            return res.end('nothing to see here')
         }
-    }
 
-    // Now serve the collaborative text!
-    braid_text.serve(req, res, { key: normalize_url(url) })
-});
+        if (is_external_link && !config.sync[url]) {
+            config.sync[url] = true
+            await braid_text.put('.braidfs/config', {
+                parents: (await braid_text.get('.braidfs/config', {})).version,
+                patches: [{
+                    unit: 'json',
+                    range: `sync[${JSON.stringify(url)}]`,
+                    content: 'true'
+                }]
+            })
+        }
 
-server.listen(config.port, () => {
-    console.log(`server started on port ${config.port}`);
-    if (!config.allow_remote_access) console.log('!! only accessible from localhost !!');
-});
+        let p = await proxy_url(url)
 
-async function proxy_url(url) {
-    async function ensure_path(path) {
-        try {
-            await require("fs").promises.mkdir(path, { recursive: true })
-        } catch (e) {
-            let parts = path.split(require("path").sep).slice(1)
-            for (let i = 1; i <= parts.length; i++) {
-                let partial = require("path").sep + require("path").join(...parts.slice(0, i))
-
-                if (!(await is_dir(partial))) {
-                    let save = await require("fs").promises.readFile(partial)
-
-                    await require("fs").promises.unlink(partial)
-                    await require("fs").promises.mkdir(path, { recursive: true })
-
-                    while (await is_dir(partial))
-                        partial = require("path").join(partial, 'index')
-
-                    await require("fs").promises.writeFile(partial, save)
-                    break
-                }
+        res.setHeader('Editable', !p.file_read_only)
+        if (req.method == "PUT" || req.method == "POST" || req.method == "PATCH") {
+            if (p.file_read_only) {
+                res.statusCode = 403 // Forbidden status code
+                return res.end('access denied')
             }
         }
-    }
 
+        braid_text.serve(req, res, { key: normalize_url(url) })
+    }).listen(config.port, () => {
+        console.log(`server started on port ${config.port}`)
+        if (!config.allow_remote_access) console.log('!! only accessible from localhost !!')
+
+        proxy_url('.braidfs/config').then(() => {
+            let peer = Math.random().toString(36).slice(2)
+            braid_text.get('.braidfs/config', {
+                subscribe: async update => {
+                    let prev_syncs = Object.keys(config.sync)
+
+                    let x = await braid_text.get('.braidfs/config')
+                    try {
+                        config = JSON.parse(x)
+
+                        // did anything get deleted?
+                        for (let url of prev_syncs) if (!config.sync[url]) unproxy_url(url)
+
+                        for (let url of Object.keys(config.sync)) proxy_url(url)
+                    } catch (e) {
+                        if (x !== '') console.log(`warning: config file is currently invalid.`)
+                        return
+                    }
+                },
+                peer
+            })
+        })
+        proxy_url('.braidfs/errors')
+
+        console.log({ sync: config.sync })
+        for (let url of Object.keys(config.sync)) proxy_url(url)
+
+        require('chokidar').watch(proxy_base).on('change', chokidar_handler).on('add', chokidar_handler)
+        async function chokidar_handler(fullpath) {
+            path = require('path').relative(proxy_base, fullpath)
+
+            // Skip any temp files with a # in the name
+            if (path.includes('#')) return
+
+            // Skip stuff in .braidfs/ except for config and errors
+            if (path.startsWith('.braidfs')) {
+                if (!path.match(/^\.braidfs\/(config|errors)$/)) return
+            }
+
+            console.log(`file event: ${path}`)
+
+            let update_func = await path_to_func[normalize_url(path)]
+            if (update_func) update_func()
+            else {
+                // throw this unrecognized file into the trash,
+                let dest = `${trash}/${braid_text.encode_filename(path)}_${Math.random().toString(36).slice(2)}`
+                console.log(`moving untracked file ${fullpath} to ${dest}`)
+                await require('fs').promises.rename(fullpath, dest)
+
+                // and log an error
+                let x = await braid_text.get('.braidfs/errors', {})
+                let len = [...x.body].length
+                await braid_text.put('.braidfs/errors', {
+                    parents: x.version,
+                    patches: [{
+                        unit: 'text',
+                        range: `[${len}:${len}]`,
+                        content: `error: unsynced file ${fullpath}; moved to ${dest}\n`
+                    }]
+                })
+            }
+        }
+    }).on('error', e => {
+        if (e.code === 'EADDRINUSE') return console.log(`server already running on port ${config.port}`)
+        throw e
+    })
+}
+
+function unproxy_url(url) {
+    if (!proxy_url.cache?.[url]) return
+
+    console.log(`unproxy_url: ${url}`)
+
+    delete proxy_url.cache[url]
+    unproxy_url.cache[url] = unproxy_url.cache[url]()
+}
+
+async function proxy_url(url) {
     // normalize url by removing any trailing /index/index/
     let normalized_url = normalize_url(url)
     let wasnt_normal = normalized_url != url
     url = normalized_url
 
     let is_external_link = url.match(/^https?:\/\//)
-    let path = is_external_link ? url.replace(/^https?:\/\//, '') : `localhost/${url}`
-    let fullpath = require("path").join(config.proxy_base, path)
-
-    if (is_external_link) {
-        let u = new URL(url)
-        host_to_protocol[u.host] = u.protocol
-    }
+    let path = is_external_link ? url.replace(/^https?:\/\//, '') : url
+    let fullpath = `${proxy_base}/${path}`
+    let meta_path = `${proxy_base_meta}/${braid_text.encode_filename(url)}`
 
     let set_path_to_func
     if (!path_to_func[path]) path_to_func[path] = new Promise(done => set_path_to_func = done)
@@ -228,16 +226,47 @@ async function proxy_url(url) {
     if (!proxy_url.cache) proxy_url.cache = {}
     if (!proxy_url.chain) proxy_url.chain = Promise.resolve()
     if (!proxy_url.cache[url]) proxy_url.cache[url] = proxy_url.chain = proxy_url.chain.then(async () => {
+        let freed = false
+        let aborts = new Set()
+        let braid_text_get_options = null
+        let wait_count = 0
+        let wait_promise, wait_promise_done
+        let start_something = () => {
+            if (freed) return
+            if (!wait_count) wait_promise = new Promise(done => wait_promise_done = done)
+            return ++wait_count
+        }
+        let finish_something = () => {
+            wait_count--
+            if (!wait_count) wait_promise_done()
+        }
+        if (!unproxy_url.cache) unproxy_url.cache = {}
+        let old_unproxy = unproxy_url.cache[url]
+        unproxy_url.cache[url] = async () => {
+            freed = true
+            delete path_to_func[path]
+            for (let a of aborts) a.abort()
+            await wait_promise
+            if (braid_text_get_options) await braid_text.forget(url, braid_text_get_options)
+            await braid_text.delete(url)
+            await require('fs').promises.unlink(meta_path)
+            await require('fs').promises.unlink(await get_fullpath())
+        }
+        await old_unproxy
+
         let self = {}
 
         console.log(`proxy_url: ${url}`)
 
+        if (!start_something()) return
 
         // if we're accessing /blah/index, it will be normalized to /blah,
         // but we still want to create a directory out of blah in this case
         if (wasnt_normal && !(await is_dir(fullpath))) await ensure_path(fullpath)
 
         await ensure_path(require("path").dirname(fullpath))
+
+        finish_something()
 
         async function get_fullpath() {
             let p = fullpath
@@ -256,30 +285,40 @@ async function proxy_url(url) {
         let file_loop_pump_lock = 0
 
         function signal_file_needs_reading() {
+            if (freed) return
             file_needs_reading = true
             file_loop_pump()
         }
 
         function signal_file_needs_writing() {
+            if (freed) return
             file_needs_writing = true
             file_loop_pump()
         }
 
         async function send_out(stuff) {
+            if (!start_something()) return
             if (is_external_link) {
                 try {
+                    let a = new AbortController()
+                    aborts.add(a)
                     await braid_fetch(url, {
+                        signal: a.signal,
                         headers: {
                             "Merge-Type": "dt",
                             "Content-Type": 'text/plain',
-                            ...config?.domains?.[(new URL(url)).hostname]?.auth_headers,
+                            ...config.domains?.[(new URL(url)).hostname]?.auth_headers,
                         },
                         method: "PUT",
                         retry: true,
                         ...stuff
                     })
-                } catch (e) { crash(e) }
+                    aborts.delete(a)
+                } catch (e) {
+                    if (e?.name !== "AbortError") crash(e)
+                }
             }
+            finish_something()
         }
 
         set_path_to_func(signal_file_needs_reading)
@@ -289,23 +328,30 @@ async function proxy_url(url) {
             if (file_loop_pump_lock) return
             file_loop_pump_lock++
 
+            if (!start_something()) return
+
             if (file_last_version === null) {
-                try {
-                    let meta = JSON.parse(await require('fs').promises.readFile(require('path').join(config.proxy_base_meta, braid_text.encode_filename(url)), { encoding: 'utf8' }))
-                    let _ = ({version: file_last_version, digest: file_last_digest} = Array.isArray(meta) ? {version: meta} : meta)
+                if (await require('fs').promises.access(meta_path).then(() => 1, () => 0)) {
+                    // meta file exists
+                    let meta = JSON.parse(await require('fs').promises.readFile(meta_path, { encoding: 'utf8' }))
+                    let _ = ({ version: file_last_version, digest: file_last_digest } = Array.isArray(meta) ? { version: meta } : meta)
 
                     file_last_text = (await braid_text.get(url, { version: file_last_version })).body
                     file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
-                } catch (e) {
+
+                    // sanity check
+                    if (file_last_digest && require('crypto').createHash('sha256').update(file_last_text).digest('base64') != file_last_digest) throw new Error('file_last_text does not match file_last_digest')
+                } else if (await require('fs').promises.access(await get_fullpath()).then(() => 1, () => 0)) {
+                    // file exists, but not meta file
+                    file_last_version = []
+                    file_last_text = ''
+                } else {
+                    // file doesn't exist, nor does meta file
                     file_needs_writing = true
                     file_last_version = []
                     file_last_text = ''
                     await require('fs').promises.writeFile(await get_fullpath(), file_last_text)
-                    await require('fs').promises.writeFile(require('path').join(config.proxy_base_meta, braid_text.encode_filename(url)), JSON.stringify({version: file_last_version, digest: require('crypto').createHash('sha256').update(file_last_text).digest('base64')}))
                 }
-
-                // sanity check
-                if (file_last_digest && require('crypto').createHash('sha256').update(file_last_text).digest('base64') != file_last_digest) throw new Error('file_last_text does not match file_last_digest')
             }
 
             while (file_needs_reading || file_needs_writing) {
@@ -332,7 +378,7 @@ async function proxy_url(url) {
 
                         await braid_text.put(url, { version, parents, patches, peer })
 
-                        await require('fs').promises.writeFile(require('path').join(config.proxy_base_meta, braid_text.encode_filename(url)), JSON.stringify({version: file_last_version, digest: require('crypto').createHash('sha256').update(file_last_text).digest('base64')}))
+                        await require('fs').promises.writeFile(meta_path, JSON.stringify({ version: file_last_version, digest: require('crypto').createHash('sha256').update(file_last_text).digest('base64') }))
                     }
                 }
                 if (file_needs_writing) {
@@ -347,27 +393,35 @@ async function proxy_url(url) {
                         file_last_version = version
                         file_last_text = body
                         await require('fs').promises.writeFile(await get_fullpath(), file_last_text)
-                        await require('fs').promises.writeFile(require('path').join(config.proxy_base_meta, braid_text.encode_filename(url)), JSON.stringify({version: file_last_version, digest: require('crypto').createHash('sha256').update(file_last_text).digest('base64')}))
+                        await require('fs').promises.writeFile(meta_path, JSON.stringify({ version: file_last_version, digest: require('crypto').createHash('sha256').update(file_last_text).digest('base64') }))
                     }
 
                     if (await is_read_only(await get_fullpath()) !== self.file_read_only) await set_read_only(await get_fullpath(), self.file_read_only)
                 }
             }
+
+            finish_something()
+
             file_loop_pump_lock--
         }
 
         // try a HEAD without subscribe to get the version
         let parents = null
         if (is_external_link) {
+            if (!start_something()) return
             try {
+                let a = new AbortController()
+                aborts.add(a)
                 let head_res = await braid_fetch(url, {
+                    signal: a.signal,
                     method: 'HEAD',
                     headers: {
                         Accept: 'text/plain',
-                        ...config?.domains?.[(new URL(url)).hostname]?.auth_headers,
+                        ...config.domains?.[(new URL(url)).hostname]?.auth_headers,
                     },
                     retry: true,
                 })
+                aborts.delete(a)
                 parents = head_res.headers.get('version') ?
                     JSON.parse(`[${head_res.headers.get('version')}]`) :
                     null
@@ -377,7 +431,6 @@ async function proxy_url(url) {
                 console.log('HEAD failed: ', e)
             }
 
-            // work here
             console.log(`waiting_for_versions: ${parents}`)
 
             let waiting_for_versions = {}
@@ -388,11 +441,20 @@ async function proxy_url(url) {
             }
 
             await new Promise(done => {
+                let a = new AbortController()
+                aborts.add({
+                    abort: () => {
+                        a.abort()
+                        done?.()
+                        done = null
+                    }
+                })
                 braid_fetch(url, {
+                    signal: a.signal,
                     headers: {
                         "Merge-Type": "dt",
                         Accept: 'text/plain',
-                        ...config?.domains?.[(new URL(url)).hostname]?.auth_headers,
+                        ...config.domains?.[(new URL(url)).hostname]?.auth_headers,
                     },
                     subscribe: true,
                     retry: true,
@@ -422,9 +484,14 @@ async function proxy_url(url) {
                     }
                 }).then(x => {
                     x.subscribe(async update => {
+                        if (update.body) update.body = update.body_text
+                        if (update.patches) for (let p of update.patches) p.content = p.content_text
+
                         // console.log(`update: ${JSON.stringify(update, null, 4)}`)
                         if (update.version.length == 0) return;
                         if (update.version.length != 1) throw 'unexpected';
+
+                        if (!start_something()) return
 
                         await braid_text.put(url, { ...update, peer, merge_type: 'dt' })
 
@@ -439,13 +506,15 @@ async function proxy_url(url) {
                         }
 
                         signal_file_needs_writing()
-                    }, crash)
-                }).catch(crash)
+                        finish_something()
+                    }, e => (e?.name !== "AbortError") && crash(e))
+                }).catch(e => (e?.name !== "AbortError") && crash(e))
             })
+            finish_something()
         }
 
         // now get everything since then, and send it back..
-        braid_text.get(url, {
+        braid_text.get(url, braid_text_get_options = {
             parents,
             merge_type: 'dt',
             peer,
@@ -463,6 +532,30 @@ async function proxy_url(url) {
         return self
     })
     return await proxy_url.cache[url]
+}
+
+async function ensure_path(path) {
+    try {
+        await require("fs").promises.mkdir(path, { recursive: true })
+    } catch (e) {
+        let parts = path.split(require("path").sep).slice(1)
+        for (let i = 1; i <= parts.length; i++) {
+            let partial = require("path").sep + require("path").join(...parts.slice(0, i))
+
+            if (!(await is_dir(partial))) {
+                let save = await require("fs").promises.readFile(partial)
+
+                await require("fs").promises.unlink(partial)
+                await require("fs").promises.mkdir(path, { recursive: true })
+
+                while (await is_dir(partial))
+                    partial = require("path").join(partial, 'index')
+
+                await require("fs").promises.writeFile(partial, save)
+                break
+            }
+        }
+    }
 }
 
 ////////////////////////////////
