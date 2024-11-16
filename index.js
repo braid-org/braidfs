@@ -441,6 +441,12 @@ async function proxy_url(url) {
             }
 
             await new Promise(done => {
+                if (!Object.keys(waiting_for_versions).length) {
+                    console.log('got everything we were waiting for..')
+                    done()
+                    done = null
+                }
+
                 let a = new AbortController()
                 aborts.add({
                     abort: () => {
