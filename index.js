@@ -10,7 +10,7 @@ process.on("unhandledRejection", (x) => console.log(`unhandledRejection: ${x.sta
 process.on("uncaughtException", (x) => console.log(`uncaughtException: ${x.stack}`))
 
 let proxy_base = `${require('os').homedir()}/http`
-let braidfs_config_dir =`${proxy_base}/.braidfs`
+let braidfs_config_dir = `${proxy_base}/.braidfs`
 let braidfs_config_file = `${braidfs_config_dir}/config`
 let proxy_base_meta = `${braidfs_config_dir}/proxy_base_meta`
 braid_text.db_folder = `${braidfs_config_dir}/braid-text-db`
@@ -39,6 +39,9 @@ require('fs').mkdirSync(proxy_base_meta, { recursive: true })
 require('fs').mkdirSync(trash, { recursive: true })
 
 // process command line args
+let to_run_in_background = process.platform === 'darwin' ? `
+To run server in background:
+    launchctl submit -l org.braid.braidfs -- braidfs serve` : ''
 let argv = process.argv.slice(2)
 if (argv.length === 1 && argv[0] === 'serve') {
     return main()
@@ -54,7 +57,7 @@ if (argv.length === 1 && argv[0] === 'serve') {
         console.log(`${operation}ing ${url}`)
         operations.push({ operation, url })
     }
-    return Promise.all(operations.map(({ operation, url }) => 
+    return Promise.all(operations.map(({ operation, url }) =>
         braid_fetch(`http://localhost:${config.port}/.braidfs/config`, {
             method: 'PUT',
             patches: [{
@@ -64,22 +67,16 @@ if (argv.length === 1 && argv[0] === 'serve') {
             }]
         }).then(() => console.log(`${operation}ed: ${url}`))
     )).then(() => console.log('All operations completed successfully.'))
-    .catch(() => {
-        return console.log(`The braidfs server does not appear to be running.
+        .catch(() => {
+            return console.log(`The braidfs server does not appear to be running.
 You can run it with:
-> braidfs serve${process.platform === 'darwin' ? `
-or in the background with:
-> launchctl submit -l org.braid.braidfs -- braidfs serve` :
-''}`)
-    })
+    braidfs serve${to_run_in_background}`)
+        })
 } else {
     return console.log(`Usage:
     braidfs serve
     braidfs sync <URL>
-    braidfs unsync <URL>${process.platform === 'darwin' ? `
-To run server in background:
-    launchctl submit -l org.braid.braidfs -- braidfs serve` :
-''}`)
+    braidfs unsync <URL>${to_run_in_background}`)
 }
 
 async function main() {
@@ -136,16 +133,30 @@ async function main() {
             let peer = Math.random().toString(36).slice(2)
             braid_text.get('.braidfs/config', {
                 subscribe: async update => {
-                    let prev_syncs = Object.keys(config.sync)
+                    let prev = config
 
                     let x = await braid_text.get('.braidfs/config')
                     try {
                         config = JSON.parse(x)
 
                         // did anything get deleted?
-                        for (let url of prev_syncs) if (!config.sync[url]) unproxy_url(url)
+                        for (let url of Object.keys(prev.sync)) if (!config.sync[url]) unproxy_url(url)
 
                         for (let url of Object.keys(config.sync)) proxy_url(url)
+
+                        // if any auth stuff has changed,
+                        // have the appropriate connections reconnect
+                        let changed = new Set()
+                        // any old domains no longer exist?
+                        for (let domain of Object.keys(prev.domains ?? {}))
+                            if (!config.domains?.[domain]) changed.add(domain)
+                        // any new domains not like the old?
+                        for (let [domain, v] of Object.entries(config.domains ?? {}))
+                            if (!prev.domains?.[domain] || JSON.stringify(prev.domains[domain]) != JSON.stringify(v)) changed.add(domain)
+                        // ok, have every domain which has changed reconnect
+                        for (let [url, x] of Object.entries(proxy_url.cache))
+                            if (url.match(/^https?:\/\//) && changed.has(new URL(url).hostname))
+                                (await x).reconnect()
                     } catch (e) {
                         if (x !== '') console.log(`warning: config file is currently invalid.`)
                         return
@@ -297,6 +308,8 @@ async function proxy_url(url) {
         }
 
         async function send_out(stuff) {
+            console.log(`send_out ${url} ${JSON.stringify(stuff, null, 4).slice(0, 1000)}`)
+
             if (!start_something()) return
             if (is_external_link) {
                 try {
@@ -356,6 +369,8 @@ async function proxy_url(url) {
 
             while (file_needs_reading || file_needs_writing) {
                 if (file_needs_reading) {
+                    console.log(`reading file: ${await get_fullpath()}`)
+
                     file_needs_reading = false
 
                     if (self.file_read_only === null) try { self.file_read_only = await is_read_only(await get_fullpath()) } catch (e) { }
@@ -365,6 +380,8 @@ async function proxy_url(url) {
 
                     var patches = diff(file_last_text, text)
                     if (patches.length) {
+                        console.log(`found changes in: ${await get_fullpath()}`)
+
                         // convert from js-indicies to code-points
                         char_counter += patches_to_code_points(patches, file_last_text)
 
@@ -379,6 +396,8 @@ async function proxy_url(url) {
                         await braid_text.put(url, { version, parents, patches, peer })
 
                         await require('fs').promises.writeFile(meta_path, JSON.stringify({ version: file_last_version, digest: require('crypto').createHash('sha256').update(file_last_text).digest('base64') }))
+                    } else {
+                        console.log(`no changes found in: ${await get_fullpath()}`)
                     }
                 }
                 if (file_needs_writing) {
@@ -447,74 +466,92 @@ async function proxy_url(url) {
                     done = null
                 }
 
-                let a = new AbortController()
-                aborts.add({
-                    abort: () => {
+                connect()
+                function connect() {
+                    let a = new AbortController()
+                    aborts.add({
+                        abort: () => {
+                            a.abort()
+                            done?.()
+                            done = null
+                        }
+                    })
+                    self.reconnect = () => {
+                        console.log(`reconnecting ${url}`)
+
+                        aborts.delete(a)
                         a.abort()
-                        done?.()
-                        done = null
+                        connect()
                     }
-                })
-                braid_fetch(url, {
-                    signal: a.signal,
-                    headers: {
-                        "Merge-Type": "dt",
-                        Accept: 'text/plain',
-                        ...config.domains?.[(new URL(url)).hostname]?.auth_headers,
-                    },
-                    subscribe: true,
-                    retry: true,
-                    heartbeats: 120,
-                    parents: async () => {
-                        let cur = await braid_text.get(url, {})
-                        if (cur.version.length) {
-                            if (done) {
-                                for (let v of cur.version) {
-                                    let [a, seq] = v.split('-')
-                                    if (waiting_for_versions[a] <= seq) delete waiting_for_versions[a]
+
+                    console.log(`connecting to ${url}`)
+                    braid_fetch(url, {
+                        signal: a.signal,
+                        headers: {
+                            "Merge-Type": "dt",
+                            Accept: 'text/plain',
+                            ...config.domains?.[(new URL(url)).hostname]?.auth_headers,
+                        },
+                        subscribe: true,
+                        retry: {
+                            onRes: (res) => {
+                                console.log(`connected to ${url}`)
+                                console.log(`  editable = ${res.headers.get('editable')}`)
+
+                                self.file_read_only = res.headers.get('editable') === 'false'
+                                signal_file_needs_writing()
+                            }
+                        },
+                        heartbeats: 120,
+                        parents: async () => {
+                            let cur = await braid_text.get(url, {})
+                            if (cur.version.length) {
+                                if (done) {
+                                    for (let v of cur.version) {
+                                        let [a, seq] = v.split('-')
+                                        if (waiting_for_versions[a] <= seq) delete waiting_for_versions[a]
+                                    }
+                                    if (!Object.keys(waiting_for_versions).length) {
+                                        console.log('got everything we were waiting for.')
+                                        done()
+                                        done = null
+                                    }
                                 }
+
+                                return cur.version
+                            }
+                        },
+                        peer
+                    }).then(x => {
+                        x.subscribe(async update => {
+                            console.log(`got external update about ${url}`)
+
+                            if (update.body) update.body = update.body_text
+                            if (update.patches) for (let p of update.patches) p.content = p.content_text
+
+                            // console.log(`update: ${JSON.stringify(update, null, 4)}`)
+                            if (update.version.length == 0) return;
+                            if (update.version.length != 1) throw 'unexpected';
+
+                            if (!start_something()) return
+
+                            await braid_text.put(url, { ...update, peer, merge_type: 'dt' })
+
+                            if (done) {
+                                let [a, seq] = update.version[0].split('-')
+                                if (waiting_for_versions[a] <= seq) delete waiting_for_versions[a]
                                 if (!Object.keys(waiting_for_versions).length) {
-                                    console.log('got everything we were waiting for.')
+                                    console.log('got everything we were waiting for..')
                                     done()
                                     done = null
                                 }
                             }
 
-                            return cur.version
-                        }
-                    },
-                    peer,
-                    onRes: (res) => {
-                        self.file_read_only = res.headers.get('editable') === 'false'
-                        signal_file_needs_writing()
-                    }
-                }).then(x => {
-                    x.subscribe(async update => {
-                        if (update.body) update.body = update.body_text
-                        if (update.patches) for (let p of update.patches) p.content = p.content_text
-
-                        // console.log(`update: ${JSON.stringify(update, null, 4)}`)
-                        if (update.version.length == 0) return;
-                        if (update.version.length != 1) throw 'unexpected';
-
-                        if (!start_something()) return
-
-                        await braid_text.put(url, { ...update, peer, merge_type: 'dt' })
-
-                        if (done) {
-                            let [a, seq] = update.version[0].split('-')
-                            if (waiting_for_versions[a] <= seq) delete waiting_for_versions[a]
-                            if (!Object.keys(waiting_for_versions).length) {
-                                console.log('got everything we were waiting for..')
-                                done()
-                                done = null
-                            }
-                        }
-
-                        signal_file_needs_writing()
-                        finish_something()
-                    }, e => (e?.name !== "AbortError") && crash(e))
-                }).catch(e => (e?.name !== "AbortError") && crash(e))
+                            signal_file_needs_writing()
+                            finish_something()
+                        }, e => (e?.name !== "AbortError") && crash(e))
+                    }).catch(e => (e?.name !== "AbortError") && crash(e))
+                }
             })
             finish_something()
         }
@@ -663,6 +700,8 @@ async function is_read_only(fullpath) {
 }
 
 async function set_read_only(fullpath, read_only) {
+    console.log(`set_read_only(${fullpath}, ${read_only})`)
+
     if (require('os').platform() === "win32") {
         await new Promise((resolve, reject) => {
             require("child_process").exec(`fsutil file setattr readonly "${fullpath}" ${!!read_only}`, (error) => error ? reject(error) : resolve())
