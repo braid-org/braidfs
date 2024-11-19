@@ -2,22 +2,22 @@
 
 console.log(`braidfs version: ${require(`${__dirname}/package.json`).version}`)
 
-let { diff_main } = require(`${__dirname}/diff.js`)
-let braid_text = require("braid-text")
-let braid_fetch = require('braid-http').fetch
+var { diff_main } = require(`${__dirname}/diff.js`),
+    braid_text = require("braid-text"),
+    braid_fetch = require('braid-http').fetch
 
 process.on("unhandledRejection", (x) => console.log(`unhandledRejection: ${x.stack}`))
 process.on("uncaughtException", (x) => console.log(`uncaughtException: ${x.stack}`))
 
-let proxy_base = `${require('os').homedir()}/http`
-let braidfs_config_dir = `${proxy_base}/.braidfs`
-let braidfs_config_file = `${braidfs_config_dir}/config`
-let proxy_base_meta = `${braidfs_config_dir}/proxy_base_meta`
+var proxy_base = `${require('os').homedir()}/http`,
+    braidfs_config_dir = `${proxy_base}/.braidfs`,
+    braidfs_config_file = `${braidfs_config_dir}/config`,
+    proxy_base_meta = `${braidfs_config_dir}/proxy_base_meta`
 braid_text.db_folder = `${braidfs_config_dir}/braid-text-db`
-let trash = `${braidfs_config_dir}/trash`
+var trash = `${braidfs_config_dir}/trash`
 
-let config = null
-let path_to_func = {}
+var config = null,
+    path_to_func = {}
 
 if (require('fs').existsSync(proxy_base)) {
     try {
@@ -48,8 +48,8 @@ if (argv.length === 1 && argv[0] === 'serve') {
 } else if (argv.length && argv.length % 2 == 0 && argv.every((x, i) => i % 2 != 0 || x.match(/^(sync|unsync)$/))) {
     let operations = []
     for (let i = 0; i < argv.length; i += 2) {
-        let operation = argv[i]
-        let url = argv[i + 1]
+        var operation = argv[i],
+            url = argv[i + 1]
         if (!url.match(/^https?:\/\//)) {
             if (url.startsWith('/')) url = require('path').relative(proxy_base, url)
             url = `https://${url}`
@@ -94,10 +94,10 @@ async function main() {
         free_the_cors(req, res)
         if (req.method === 'OPTIONS') return
 
-        let url = req.url.slice(1)
-        let is_external_link = url.match(/^https?:\/\//)
+        var url = req.url.slice(1),
+            is_external_link = url.match(/^https?:\/\//)
 
-        if (!is_external_link && url !== '.braidfs/config' && url != '.braidfs/errors') {
+        if (!is_external_link && url !== '.braidfs/config' && url !== '.braidfs/errors') {
             res.writeHead(404, { 'Content-Type': 'text/plain' })
             return res.end('nothing to see here')
         }
@@ -114,15 +114,14 @@ async function main() {
             })
         }
 
-        let p = await proxy_url(url)
+        var p = await proxy_url(url)
 
         res.setHeader('Editable', !p.file_read_only)
-        if (req.method == "PUT" || req.method == "POST" || req.method == "PATCH") {
+        if (req.method == "PUT" || req.method == "POST" || req.method == "PATCH")
             if (p.file_read_only) {
                 res.statusCode = 403 // Forbidden status code
                 return res.end('access denied')
             }
-        }
 
         braid_text.serve(req, res, { key: normalize_url(url) })
     }).listen(config.port, () => {
@@ -140,7 +139,8 @@ async function main() {
                         config = JSON.parse(x)
 
                         // did anything get deleted?
-                        for (let url of Object.keys(prev.sync)) if (!config.sync[url]) unproxy_url(url)
+                        for (let url of Object.keys(prev.sync))
+                            if (!config.sync[url]) unproxy_url(url)
 
                         for (let url of Object.keys(config.sync)) proxy_url(url)
 
@@ -152,10 +152,13 @@ async function main() {
                             if (!config.domains?.[domain]) changed.add(domain)
                         // any new domains not like the old?
                         for (let [domain, v] of Object.entries(config.domains ?? {}))
-                            if (!prev.domains?.[domain] || JSON.stringify(prev.domains[domain]) != JSON.stringify(v)) changed.add(domain)
+                            if (!prev.domains?.[domain]
+                                || JSON.stringify(prev.domains[domain]) !== JSON.stringify(v))
+                                changed.add(domain)
                         // ok, have every domain which has changed reconnect
                         for (let [url, x] of Object.entries(proxy_url.cache))
-                            if (url.match(/^https?:\/\//) && changed.has(new URL(url).hostname))
+                            if (url.match(/^https?:\/\//)
+                                && changed.has(new URL(url).hostname))
                                 (await x).reconnect()
                     } catch (e) {
                         if (x !== '') console.log(`warning: config file is currently invalid.`)
@@ -174,17 +177,19 @@ async function main() {
         async function chokidar_handler(fullpath) {
             path = require('path').relative(proxy_base, fullpath)
 
-            // Skip any temp files with a # in the name
-            if (path.includes('#')) return
-
-            // Skip stuff in .braidfs/ except for config and errors
-            if (path.startsWith('.braidfs')) {
-                if (!path.match(/^\.braidfs\/(config|errors)$/)) return
-            }
+            // Files to skip
+            if (// Paths with a # in the name can't map to real URLs
+                path.includes('#')
+                // .DS_store
+                || path.endsWith('.DS_store')
+                // Skip stuff in .braidfs/ except for config and errors
+                || (path.startsWith('.braidfs')
+                    && !path.match(/^\.braidfs\/(config|errors)$/)))
+                return
 
             console.log(`file event: ${path}`)
 
-            let update_func = await path_to_func[normalize_url(path)]
+            var update_func = await path_to_func[normalize_url(path)]
             if (update_func) update_func()
             else {
                 // throw this unrecognized file into the trash,
@@ -193,8 +198,8 @@ async function main() {
                 await require('fs').promises.rename(fullpath, dest)
 
                 // and log an error
-                let x = await braid_text.get('.braidfs/errors', {})
-                let len = [...x.body].length
+                var x = await braid_text.get('.braidfs/errors', {}),
+                    len = [...x.body].length
                 await braid_text.put('.braidfs/errors', {
                     parents: x.version,
                     patches: [{
@@ -222,14 +227,14 @@ function unproxy_url(url) {
 
 async function proxy_url(url) {
     // normalize url by removing any trailing /index/index/
-    let normalized_url = normalize_url(url)
-    let wasnt_normal = normalized_url != url
+    var normalized_url = normalize_url(url),
+        wasnt_normal = normalized_url != url
     url = normalized_url
 
-    let is_external_link = url.match(/^https?:\/\//)
-    let path = is_external_link ? url.replace(/^https?:\/\//, '') : url
-    let fullpath = `${proxy_base}/${path}`
-    let meta_path = `${proxy_base_meta}/${braid_text.encode_filename(url)}`
+    var is_external_link = url.match(/^https?:\/\//),
+        path = is_external_link ? url.replace(/^https?:\/\//, '') : url,
+        fullpath = `${proxy_base}/${path}`,
+        meta_path = `${proxy_base_meta}/${braid_text.encode_filename(url)}`,
 
     let set_path_to_func
     if (!path_to_func[path]) path_to_func[path] = new Promise(done => set_path_to_func = done)
@@ -237,22 +242,22 @@ async function proxy_url(url) {
     if (!proxy_url.cache) proxy_url.cache = {}
     if (!proxy_url.chain) proxy_url.chain = Promise.resolve()
     if (!proxy_url.cache[url]) proxy_url.cache[url] = proxy_url.chain = proxy_url.chain.then(async () => {
-        let freed = false
-        let aborts = new Set()
-        let braid_text_get_options = null
-        let wait_count = 0
-        let wait_promise, wait_promise_done
-        let start_something = () => {
+        var freed = false,
+            aborts = new Set(),
+            braid_text_get_options = null,
+            wait_count = 0,
+         var wait_promise, wait_promise_done
+         var start_something = () => {
             if (freed) return
             if (!wait_count) wait_promise = new Promise(done => wait_promise_done = done)
             return ++wait_count
         }
-        let finish_something = () => {
+        var finish_something = () => {
             wait_count--
             if (!wait_count) wait_promise_done()
         }
         if (!unproxy_url.cache) unproxy_url.cache = {}
-        let old_unproxy = unproxy_url.cache[url]
+        var old_unproxy = unproxy_url.cache[url]
         unproxy_url.cache[url] = async () => {
             freed = true
             delete path_to_func[path]
@@ -265,7 +270,7 @@ async function proxy_url(url) {
         }
         await old_unproxy
 
-        let self = {}
+        var self = {}
 
         console.log(`proxy_url: ${url}`)
 
@@ -280,20 +285,20 @@ async function proxy_url(url) {
         finish_something()
 
         async function get_fullpath() {
-            let p = fullpath
+            var p = fullpath
             while (await is_dir(p)) p = require("path").join(p, 'index')
             return p
         }
 
-        let peer = Math.random().toString(36).slice(2)
-        var char_counter = -1
-        let file_last_version = null
-        let file_last_digest = null
-        let file_last_text = null
+        var peer = Math.random().toString(36).slice(2),
+            char_counter = -1,
+            file_last_version = null,
+            file_last_digest = null,
+            file_last_text = null,
         self.file_read_only = null
-        let file_needs_reading = true
-        let file_needs_writing = null
-        let file_loop_pump_lock = 0
+        var file_needs_reading = true,
+            file_needs_writing = null,
+            file_loop_pump_lock = 0
 
         function signal_file_needs_reading() {
             if (freed) return
@@ -412,7 +417,11 @@ async function proxy_url(url) {
                         file_last_version = version
                         file_last_text = body
                         await require('fs').promises.writeFile(await get_fullpath(), file_last_text)
-                        await require('fs').promises.writeFile(meta_path, JSON.stringify({ version: file_last_version, digest: require('crypto').createHash('sha256').update(file_last_text).digest('base64') }))
+                        await require('fs').promises.writeFile(meta_path, JSON.stringify({
+                            version: file_last_version,
+                            digest: require('crypto').createHash('sha256')
+                                .update(file_last_text).digest('base64')
+                        }))
                     }
 
                     if (await is_read_only(await get_fullpath()) !== self.file_read_only) await set_read_only(await get_fullpath(), self.file_read_only)
@@ -509,7 +518,8 @@ async function proxy_url(url) {
                                 if (done) {
                                     for (let v of cur.version) {
                                         let [a, seq] = v.split('-')
-                                        if (waiting_for_versions[a] <= seq) delete waiting_for_versions[a]
+                                        if (waiting_for_versions[a] <= seq)
+                                            delete waiting_for_versions[a]
                                     }
                                     if (!Object.keys(waiting_for_versions).length) {
                                         console.log('got everything we were waiting for.')
@@ -530,8 +540,8 @@ async function proxy_url(url) {
                             if (update.patches) for (let p of update.patches) p.content = p.content_text
 
                             // console.log(`update: ${JSON.stringify(update, null, 4)}`)
-                            if (update.version.length == 0) return;
-                            if (update.version.length != 1) throw 'unexpected';
+                            if (update.version.length === 0) return
+                            if (update.version.length !== 1) throw 'unexpected'
 
                             if (!start_something()) return
 
@@ -562,7 +572,7 @@ async function proxy_url(url) {
             merge_type: 'dt',
             peer,
             subscribe: async ({ version, parents, body, patches }) => {
-                if (version.length == 0) return;
+                if (version.length == 0) return
 
                 // console.log(`local got: ${JSON.stringify({ version, parents, body, patches }, null, 4)}`)
 
@@ -614,37 +624,37 @@ async function is_dir(p) {
 }
 
 function diff(before, after) {
-    let diff = diff_main(before, after);
-    let patches = [];
-    let offset = 0;
+    let diff = diff_main(before, after)
+    let patches = []
+    let offset = 0
     for (let d of diff) {
-        let p = null;
-        if (d[0] == 1) p = { range: [offset, offset], content: d[1] };
-        else if (d[0] == -1) {
-            p = { range: [offset, offset + d[1].length], content: "" };
-            offset += d[1].length;
-        } else offset += d[1].length;
+        let p = null
+        if (d[0] === 1) p = { range: [offset, offset], content: d[1] }
+        else if (d[0] === -1) {
+            p = { range: [offset, offset + d[1].length], content: "" }
+            offset += d[1].length
+        } else offset += d[1].length
         if (p) {
-            p.unit = "text";
-            patches.push(p);
+            p.unit = "text"
+            patches.push(p)
         }
     }
     return patches;
 }
 
 function free_the_cors(req, res) {
-    res.setHeader('Range-Request-Allow-Methods', 'PATCH, PUT');
-    res.setHeader('Range-Request-Allow-Units', 'json');
-    res.setHeader("Patches", "OK");
+    res.setHeader('Range-Request-Allow-Methods', 'PATCH, PUT')
+    res.setHeader('Range-Request-Allow-Units', 'json')
+    res.setHeader("Patches", "OK")
     var free_the_cors = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "OPTIONS, HEAD, GET, PUT, UNSUBSCRIBE",
         "Access-Control-Allow-Headers": "subscribe, client, version, parents, merge-type, content-type, content-range, patches, cache-control, peer"
     };
-    Object.entries(free_the_cors).forEach(x => res.setHeader(x[0], x[1]));
+    Object.entries(free_the_cors).forEach(x => res.setHeader(x[0], x[1]))
     if (req.method === 'OPTIONS') {
-        res.writeHead(200);
-        res.end();
+        res.writeHead(200)
+        res.end()
     }
 }
 
