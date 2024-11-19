@@ -234,7 +234,7 @@ async function proxy_url(url) {
     var is_external_link = url.match(/^https?:\/\//),
         path = is_external_link ? url.replace(/^https?:\/\//, '') : url,
         fullpath = `${proxy_base}/${path}`,
-        meta_path = `${proxy_base_meta}/${braid_text.encode_filename(url)}`,
+        meta_path = `${proxy_base_meta}/${braid_text.encode_filename(url)}`
 
     let set_path_to_func
     if (!path_to_func[path]) path_to_func[path] = new Promise(done => set_path_to_func = done)
@@ -245,7 +245,7 @@ async function proxy_url(url) {
         var freed = false,
             aborts = new Set(),
             braid_text_get_options = null,
-            wait_count = 0,
+            wait_count = 0
          var wait_promise, wait_promise_done
          var start_something = () => {
             if (freed) return
@@ -294,7 +294,7 @@ async function proxy_url(url) {
             char_counter = -1,
             file_last_version = null,
             file_last_digest = null,
-            file_last_text = null,
+            file_last_text = null
         self.file_read_only = null
         var file_needs_reading = true,
             file_needs_writing = null,
@@ -412,6 +412,10 @@ async function proxy_url(url) {
 
                         console.log(`writing file ${await get_fullpath()}`)
 
+                        // make sure the file has what it had before
+                        let text = await require('fs').promises.readFile(await get_fullpath(), { encoding: 'utf8' })
+                        if (file_last_text != text) crash(new Error('File changed without us noticing.'))
+                        
                         try { if (await is_read_only(await get_fullpath())) await set_read_only(await get_fullpath(), false) } catch (e) { }
 
                         file_last_version = version
@@ -725,6 +729,6 @@ async function set_read_only(fullpath, read_only) {
 }
 
 function crash(e) {
-    console.error('' + e.stack)
+    console.error('CRASHING: ' + e + ' ' + e.stack)
     process.exit(1)
 }
