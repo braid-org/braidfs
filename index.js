@@ -17,7 +17,8 @@ braid_text.db_folder = `${braidfs_config_dir}/braid-text-db`
 var trash = `${braidfs_config_dir}/trash`
 
 var config = null,
-    path_to_func = {}
+    path_to_func = {},
+    watcher_misses = 0
 
 if (require('fs').existsSync(proxy_base)) {
     try {
@@ -173,9 +174,18 @@ async function main() {
         console.log({ sync: config.sync })
         for (let url of Object.keys(config.sync)) proxy_url(url)
 
-        require('chokidar').watch(proxy_base).on('change', chokidar_handler).on('add', chokidar_handler)
-        async function chokidar_handler(fullpath) {
-            path = require('path').relative(proxy_base, fullpath)
+        require('chokidar').watch(proxy_base).on('change', chokidar_handler).on('add', x => chokidar_handler(x, true))
+        async function chokidar_handler(fullpath, added) {
+
+            // Make sure the path is within proxy_base..
+            if (!fullpath.startsWith(proxy_base))
+                return on_watcher_misses(`path ${fullpath} outside ${proxy_base}`)
+
+            // Make sure the path is to a file, and not a directory
+            if ((await require('fs').promises.stat(fullpath)).isDirectory())
+                return on_watcher_misses(`expected file, got: ${fullpath}`)
+
+            var path = require('path').relative(proxy_base, fullpath)
 
             // Files to skip
             if (// Paths with a # in the name can't map to real URLs
@@ -187,11 +197,14 @@ async function main() {
                     && !path.match(/^\.braidfs\/(config|errors)$/)))
                 return
 
-            console.log(`file event: ${path}`)
+            console.log(`file event: ${path}, added: ${added}`)
 
             var update_func = await path_to_func[normalize_url(path)]
-            if (update_func) update_func()
-            else {
+
+            console.log(`has update_func: ${!!update_func}`)
+
+            if (update_func && !added) update_func()
+            if (!update_func) {
                 // throw this unrecognized file into the trash,
                 let dest = `${trash}/${braid_text.encode_filename(path)}_${Math.random().toString(36).slice(2)}`
                 console.log(`moving untracked file ${fullpath} to ${dest}`)
@@ -265,8 +278,8 @@ async function proxy_url(url) {
             await wait_promise
             if (braid_text_get_options) await braid_text.forget(url, braid_text_get_options)
             await braid_text.delete(url)
-            await require('fs').promises.unlink(meta_path)
-            await require('fs').promises.unlink(await get_fullpath())
+            try { await require('fs').promises.unlink(meta_path) } catch (e) {}
+            try { await require('fs').promises.unlink(await get_fullpath()) } catch (e) {}
         }
         await old_unproxy
 
@@ -294,7 +307,8 @@ async function proxy_url(url) {
             char_counter = -1,
             file_last_version = null,
             file_last_digest = null,
-            file_last_text = null
+            file_last_text = null,
+            file_last_stat = null
         self.file_read_only = null
         var file_needs_reading = true,
             file_needs_writing = null,
@@ -380,8 +394,12 @@ async function proxy_url(url) {
 
                     if (self.file_read_only === null) try { self.file_read_only = await is_read_only(await get_fullpath()) } catch (e) { }
 
-                    let text = ''
-                    try { text = await require('fs').promises.readFile(await get_fullpath(), { encoding: 'utf8' }) } catch (e) { }
+                    let text = await require('fs').promises.readFile(
+                        await get_fullpath(), { encoding: 'utf8' })
+
+                    var stat = await require('fs').promises.stat(await get_fullpath(), {bigint: true})
+                    var stat_ms = Number(stat.mtimeMs)
+                    stat = JSON.stringify(stat, (k, v) => typeof v === 'bigint' ? v.toString() : v)
 
                     var patches = diff(file_last_text, text)
                     if (patches.length) {
@@ -403,13 +421,15 @@ async function proxy_url(url) {
                         await require('fs').promises.writeFile(meta_path, JSON.stringify({ version: file_last_version, digest: require('crypto').createHash('sha256').update(file_last_text).digest('base64') }))
                     } else {
                         console.log(`no changes found in: ${await get_fullpath()}`)
+                        if (stat === file_last_stat && Date.now() > stat_ms + 300)
+                            on_watcher_miss(`expected change to: ${await get_fullpath()}`)
                     }
+                    file_last_stat = stat
                 }
                 if (file_needs_writing) {
                     file_needs_writing = false
                     let { version, body } = await braid_text.get(url, {})
                     if (!v_eq(version, file_last_version)) {
-
                         console.log(`writing file ${await get_fullpath()}`)
 
                         // make sure the file has what it had before
@@ -421,6 +441,9 @@ async function proxy_url(url) {
                         file_last_version = version
                         file_last_text = body
                         await require('fs').promises.writeFile(await get_fullpath(), file_last_text)
+
+                        file_last_stat = JSON.stringify(await require('fs').promises.stat(await get_fullpath(), {bigint: true}), (k, v) => typeof v === 'bigint' ? v.toString() : v)
+
                         await require('fs').promises.writeFile(meta_path, JSON.stringify({
                             version: file_last_version,
                             digest: require('crypto').createHash('sha256')
@@ -731,4 +754,9 @@ async function set_read_only(fullpath, read_only) {
 function crash(e) {
     console.error('CRASHING: ' + e + ' ' + e.stack)
     process.exit(1)
+}
+
+function on_watcher_miss(message) {
+    console.log(`watcher miss: ${message}`)
+    console.log(`\x1b[33;40m[${++watcher_misses}] watcher misfires\x1b[0m`);
 }
