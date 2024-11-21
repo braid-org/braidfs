@@ -174,7 +174,7 @@ async function main() {
         console.log({ sync: config.sync })
         for (let url of Object.keys(config.sync)) proxy_url(url)
 
-        require('chokidar').watch(proxy_base).on('change', chokidar_handler).on('add', x => chokidar_handler(x, true))
+        require('chokidar').watch(proxy_base).on('change', x => chokidar_handler(x, false)).on('add', x => chokidar_handler(x, true))
         async function chokidar_handler(fullpath, added) {
 
             // Make sure the path is within proxy_base..
