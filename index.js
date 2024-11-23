@@ -143,8 +143,11 @@ async function main() {
                         config = JSON.parse(x)
 
                         // did anything get deleted?
-                        var old_syncs = new Set(Object.keys(prev.sync).map(url => normalize_url(url).replace(/^https?:\/\//, '')))
+                        var old_syncs = Object.keys(prev.sync).map(url => normalize_url(url).replace(/^https?:\/\//, ''))
                         var new_syncs = new Set(Object.keys(config.sync).map(url => normalize_url(url).replace(/^https?:\/\//, '')))
+                        for (let url of old_syncs.filter(x => !new_syncs.has(x)))
+
+
                         for (let url of old_syncs.difference(new_syncs))
                             unproxy_url(url)
 
