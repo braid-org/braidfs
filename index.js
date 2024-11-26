@@ -18,7 +18,6 @@ var trash = `${braidfs_config_dir}/trash`
 var temp_folder = `${braidfs_config_dir}/temp`
 
 var config = null,
-    path_to_func = {},
     watcher_misses = 0
 
 if (require('fs').existsSync(proxy_base)) {
