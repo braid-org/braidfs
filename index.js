@@ -286,14 +286,9 @@ async function scan_files() {
             var proxy = await proxy_url.cache[normalize_url(path)]
             if (!proxy) return await trash_file(fullpath, path)
 
+            stat = await require('fs').promises.stat(fullpath, { bigint: true })
             if (!stat_eq(stat, proxy.file_last_stat)) {
                 console.log(`scan thinks ${path} has changed`)
-
-
-                console.log(stat)
-                console.log(proxy.file_last_stat)
-
-
                 proxy.signal_file_needs_reading()
                 return true
             }
