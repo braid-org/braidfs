@@ -486,12 +486,14 @@ async function proxy_url(url) {
                             await require('fs').promises.writeFile(meta_path, JSON.stringify({ version: file_last_version, digest: require('crypto').createHash('sha256').update(self.file_last_text).digest('base64') }))
                         } else {
                             console.log(`no changes found in: ${fullpath}`)
-                            if (stat_eq(stat, self.file_last_stat)
-                                && !self.file_change_expected)
-                                on_watcher_miss(`expected change to: ${fullpath}`)
+                            if (stat_eq(stat, self.file_last_stat)) {
+                                if (Date.now() > (self.file_ignore_until ?? 0))
+                                    on_watcher_miss(`expected change to: ${fullpath}`)
+                                else console.log(`no changes expected`)
+                            } else console.log('found change in file stat')
                         }
                         self.file_last_stat = stat
-                        self.file_change_expected = null
+                        self.file_ignore_until = Date.now() + 1000
                     }
                     if (file_needs_writing) {
                         file_needs_writing = false
@@ -507,7 +509,7 @@ async function proxy_url(url) {
 
                             file_last_version = version
                             self.file_last_text = body
-                            self.file_change_expected = true
+                            self.file_ignore_until = Date.now() + 1000
                             await require('fs').promises.writeFile(fullpath, self.file_last_text)
 
 
@@ -519,7 +521,7 @@ async function proxy_url(url) {
                         }
 
                         if (await is_read_only(fullpath) !== self.file_read_only) {
-                            self.file_change_expected = true
+                            self.file_ignore_until = Date.now() + 1000
                             await set_read_only(fullpath, self.file_read_only)
                         }
 
