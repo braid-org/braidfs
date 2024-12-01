@@ -233,25 +233,26 @@ async function watch_files() {
 
     console.log('watch files..')
     watch_files.watcher = require('chokidar').watch(proxy_base).
-        on('change', x => chokidar_handler(x, false)).
-        on('add', x => chokidar_handler(x, true))
+        on('add', x => chokidar_handler(x, 'add')).
+        on('change', x => chokidar_handler(x, 'change')).
+        on('unlink', x => chokidar_handler(x, 'unlink'))
 
-    async function chokidar_handler(fullpath, added) {
+    async function chokidar_handler(fullpath, event) {
         // Make sure the path is within proxy_base..
         if (!fullpath.startsWith(proxy_base))
             return on_watcher_miss(`path ${fullpath} outside ${proxy_base}`)
 
         // Make sure the path is to a file, and not a directory
-        if ((await require('fs').promises.stat(fullpath)).isDirectory())
+        if (event != 'unlink' && (await require('fs').promises.stat(fullpath)).isDirectory())
             return on_watcher_miss(`expected file, got: ${fullpath}`)
 
         var path = require('path').relative(proxy_base, fullpath)
         if (skip_file(path)) return
-        console.log(`file event: ${path}, added: ${added}`)
+        console.log(`file event: ${path}, event: ${event}`)
 
         var proxy = await proxy_url.cache[normalize_url(path)]
 
-        if (proxy && !added) proxy.signal_file_needs_reading()
+        if (proxy && event != 'add') proxy.signal_file_needs_reading()
         if (!proxy) await trash_file(fullpath, path)
     }
 }
@@ -443,13 +444,6 @@ async function proxy_url(url) {
                         // file exists, but not meta file
                         file_last_version = []
                         self.file_last_text = ''
-                    } else {
-                        // file doesn't exist, nor does meta file
-                        file_needs_writing = true
-                        file_last_version = []
-                        self.file_last_text = ''
-
-                        await require('fs').promises.writeFile(fullpath, self.file_last_text)
                     }
                 }
 
@@ -458,6 +452,17 @@ async function proxy_url(url) {
                         console.log(`reading file: ${fullpath}`)
 
                         file_needs_reading = false
+
+                        // check if file is missing, and create it if so..
+                        if (!(await file_exists(fullpath))) {
+                            console.log(`file not found, creating: ${fullpath}`)
+                            
+                            file_needs_writing = true
+                            file_last_version = []
+                            self.file_last_text = ''
+
+                            await require('fs').promises.writeFile(fullpath, self.file_last_text)
+                        }
 
                         if (self.file_read_only === null) try { self.file_read_only = await is_read_only(fullpath) } catch (e) { }
 
@@ -850,4 +855,11 @@ async function within_file_lock(fullpath, func) {
     } finally {
         lock()
     }
+}
+
+async function file_exists(fullpath) {
+    try {
+        let x = await require('fs').promises.stat(fullpath)
+        return x.isFile()
+    } catch (e) { }
 }
