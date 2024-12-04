@@ -97,34 +97,12 @@ async function main() {
         free_the_cors(req, res)
         if (req.method === 'OPTIONS') return
 
-        var url = req.url.slice(1),
-            is_external_link = url.match(/^https?:\/\//)
+        var url = req.url.slice(1)
 
-        if (!is_external_link && url !== '.braidfs/config' && url !== '.braidfs/errors') {
-            res.writeHead(404, { 'Content-Type': 'text/plain' })
-            return res.end('nothing to see here')
+        if (url !== '.braidfs/config' && url !== '.braidfs/errors') {
+            res.writeHead(404, { 'Content-Type': 'text/html' })
+            return res.end('Nothing to see here. You can go to <a href=".braidfs/config">.braidfs/config</a> or <a href=".braidfs/errors">.braidfs/errors</a>')
         }
-
-        if (is_external_link && !config.sync[url]) {
-            config.sync[url] = true
-            await braid_text.put('.braidfs/config', {
-                parents: (await braid_text.get('.braidfs/config', {})).version,
-                patches: [{
-                    unit: 'json',
-                    range: `sync[${JSON.stringify(url)}]`,
-                    content: 'true'
-                }]
-            })
-        }
-
-        var p = await proxy_url(url)
-
-        res.setHeader('Editable', !p.file_read_only)
-        if (req.method == "PUT" || req.method == "POST" || req.method == "PATCH")
-            if (p.file_read_only) {
-                res.statusCode = 403 // Forbidden status code
-                return res.end('access denied')
-            }
 
         braid_text.serve(req, res, { key: normalize_url(url) })
     }).listen(config.port, () => {
