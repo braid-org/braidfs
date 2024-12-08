@@ -231,7 +231,7 @@ async function watch_files() {
         var proxy = await proxy_url.cache[normalize_url(path)]
 
         if (proxy && event != 'add') proxy.signal_file_needs_reading()
-        if (!proxy) await trash_file(fullpath, path)
+        if (!proxy && event != 'unlink') await trash_file(fullpath, path)
     }
 }
 
