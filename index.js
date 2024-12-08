@@ -301,7 +301,6 @@ async function proxy_url(url) {
     if (!proxy_url.cache[path]) proxy_url.cache[path] = proxy_url.chain = proxy_url.chain.then(async () => {
         var freed = false,
             aborts = new Set(),
-            braid_text_get_options = null,
             wait_count = 0
         var wait_promise, wait_promise_done
         var start_something = () => {
@@ -319,7 +318,6 @@ async function proxy_url(url) {
             freed = true
             for (let a of aborts) a.abort()
             await wait_promise
-            if (braid_text_get_options) await braid_text.forget(url, braid_text_get_options)
             await braid_text.delete(url)
             try { await require('fs').promises.unlink(meta_path) } catch (e) {}
             try { await require('fs').promises.unlink(await get_fullpath()) } catch (e) {}
@@ -464,7 +462,7 @@ async function proxy_url(url) {
 
                             send_out({ version, parents, patches, peer })
 
-                            await braid_text.put(url, { version, parents, patches, peer })
+                            await braid_text.put(url, { version, parents, patches, peer, merge_type: 'dt' })
 
                             await require('fs').promises.writeFile(meta_path, JSON.stringify({ version: file_last_version, digest: require('crypto').createHash('sha256').update(self.file_last_text).digest('base64') }))
                         } else {
@@ -650,22 +648,6 @@ async function proxy_url(url) {
             })
             finish_something()
         }
-
-        // now get everything since then, and send it back..
-        braid_text.get(url, braid_text_get_options = {
-            parents,
-            merge_type: 'dt',
-            peer,
-            subscribe: async ({ version, parents, body, patches }) => {
-                if (version.length == 0) return
-
-                // console.log(`local got: ${JSON.stringify({ version, parents, body, patches }, null, 4)}`)
-
-                signal_file_needs_writing()
-
-                send_out({ version, parents, body, patches, peer })
-            },
-        })
 
         return self
     })
