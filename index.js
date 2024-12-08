@@ -120,13 +120,13 @@ async function main() {
                         config = JSON.parse(x)
 
                         // did anything get deleted?
-                        var old_syncs = Object.keys(prev.sync).map(url => normalize_url(url).replace(/^https?:\/\//, ''))
-                        var new_syncs = new Set(Object.keys(config.sync).map(url => normalize_url(url).replace(/^https?:\/\//, '')))
+                        var old_syncs = Object.entries(prev.sync).filter(x => x[1]).map(x => normalize_url(x[0]).replace(/^https?:\/\//, ''))
+                        var new_syncs = new Set(Object.entries(config.sync).filter(x => x[1]).map(x => normalize_url(x[0]).replace(/^https?:\/\//, '')))
                         for (let url of old_syncs.filter(x => !new_syncs.has(x)))
                             unproxy_url(url)
 
                         // proxy all the new stuff
-                        for (let url of Object.keys(config.sync)) proxy_url(url)
+                        for (let x of Object.entries(config.sync)) if (x[1]) proxy_url(x[0])
 
                         // if any auth stuff has changed,
                         // have the appropriate connections reconnect
@@ -154,7 +154,7 @@ async function main() {
         proxy_url('.braidfs/errors')
 
         console.log({ sync: config.sync })
-        for (let url of Object.keys(config.sync)) proxy_url(url)
+        for (let x of Object.entries(config.sync)) if (x[1]) proxy_url(x[0])
 
         watch_files()
         setTimeout(scan_files, 1200)
