@@ -301,6 +301,7 @@ async function proxy_url(url) {
     if (!proxy_url.cache[path]) proxy_url.cache[path] = proxy_url.chain = proxy_url.chain.then(async () => {
         var freed = false,
             aborts = new Set(),
+            braid_text_get_options = null,
             wait_count = 0
         var wait_promise, wait_promise_done
         var start_something = () => {
@@ -318,6 +319,7 @@ async function proxy_url(url) {
             freed = true
             for (let a of aborts) a.abort()
             await wait_promise
+            if (braid_text_get_options) await braid_text.forget(url, braid_text_get_options)
             await braid_text.delete(url)
             try { await require('fs').promises.unlink(meta_path) } catch (e) {}
             try { await require('fs').promises.unlink(await get_fullpath()) } catch (e) {}
@@ -648,6 +650,13 @@ async function proxy_url(url) {
             })
             finish_something()
         }
+
+        // for config and errors file, listen for web changes
+        if (!is_external_link) braid_text.get(url, braid_text_get_options = {
+            merge_type: 'dt',
+            peer,
+            subscribe: signal_file_needs_writing,
+        })
 
         return self
     })
