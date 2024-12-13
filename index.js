@@ -518,137 +518,62 @@ async function proxy_url(url) {
             file_loop_pump_lock--
         }
 
-        // try a HEAD without subscribe to get the version
-        let parents = null
-        if (is_external_link) {
-            if (!start_something()) return
-            try {
-                let a = new AbortController()
-                aborts.add(a)
-                let head_res = await braid_fetch(url, {
-                    signal: a.signal,
-                    method: 'HEAD',
-                    headers: {
-                        Accept: 'text/plain',
-                        ...config.domains?.[(new URL(url)).hostname]?.auth_headers,
-                    },
-                    retry: true,
-                })
+        if (is_external_link) connect()
+        function connect() {
+            let a = new AbortController()
+            aborts.add(a)
+            self.reconnect = () => {
+                console.log(`reconnecting ${url}`)
+
                 aborts.delete(a)
-                parents = head_res.headers.get('version') ?
-                    JSON.parse(`[${head_res.headers.get('version')}]`) :
-                    null
-                self.file_read_only = head_res.headers.get('editable') === 'false'
-                signal_file_needs_writing()
-            } catch (e) {
-                console.log('HEAD failed: ', e)
-            }
-
-            console.log(`waiting_for_versions: ${parents}`)
-
-            let waiting_for_versions = {}
-            for (let p of parents ?? []) {
-                let [a, seq] = p.split('-')
-                if (seq > (waiting_for_versions[a] ?? -1))
-                    waiting_for_versions[a] = seq
-            }
-
-            await new Promise(done => {
-                if (!Object.keys(waiting_for_versions).length) {
-                    console.log('got everything we were waiting for: ' + url)
-                    done()
-                    done = null
-                }
-
+                a.abort()
                 connect()
-                function connect() {
-                    let a = new AbortController()
-                    aborts.add({
-                        abort: () => {
-                            a.abort()
-                            done?.()
-                            done = null
-                        }
-                    })
-                    self.reconnect = () => {
-                        console.log(`reconnecting ${url}`)
+            }
 
-                        aborts.delete(a)
-                        a.abort()
-                        connect()
+            console.log(`connecting to ${url}`)
+            braid_fetch(url, {
+                signal: a.signal,
+                headers: {
+                    "Merge-Type": "dt",
+                    Accept: 'text/plain',
+                    ...config.domains?.[(new URL(url)).hostname]?.auth_headers,
+                },
+                subscribe: true,
+                retry: {
+                    onRes: (res) => {
+                        console.log(`connected to ${url}`)
+                        console.log(`  editable = ${res.headers.get('editable')}`)
+
+                        self.file_read_only = res.headers.get('editable') === 'false'
+                        signal_file_needs_writing()
                     }
+                },
+                heartbeats: 120,
+                parents: async () => {
+                    let cur = await braid_text.get(url, {})
+                    if (cur.version.length) return cur.version
+                },
+                peer
+            }).then(x => {
+                x.subscribe(async update => {
+                    console.log(`got external update about ${url}`)
 
-                    console.log(`connecting to ${url}`)
-                    braid_fetch(url, {
-                        signal: a.signal,
-                        headers: {
-                            "Merge-Type": "dt",
-                            Accept: 'text/plain',
-                            ...config.domains?.[(new URL(url)).hostname]?.auth_headers,
-                        },
-                        subscribe: true,
-                        retry: {
-                            onRes: (res) => {
-                                console.log(`connected to ${url}`)
-                                console.log(`  editable = ${res.headers.get('editable')}`)
+                    if (update.body) update.body = update.body_text
+                    if (update.patches) for (let p of update.patches) p.content = p.content_text
 
-                                self.file_read_only = res.headers.get('editable') === 'false'
-                                signal_file_needs_writing()
-                            }
-                        },
-                        heartbeats: 120,
-                        parents: async () => {
-                            let cur = await braid_text.get(url, {})
-                            if (cur.version.length) {
-                                if (done) {
-                                    for (let v of cur.version) {
-                                        let [a, seq] = v.split('-')
-                                        if (waiting_for_versions[a] <= seq)
-                                            delete waiting_for_versions[a]
-                                    }
-                                    if (!Object.keys(waiting_for_versions).length) {
-                                        console.log('got everything we were waiting for.')
-                                        done()
-                                        done = null
-                                    }
-                                }
+                    // console.log(`update: ${JSON.stringify(update, null, 4)}`)
+                    if (update.version.length === 0) return
+                    if (update.version.length !== 1) throw 'unexpected'
 
-                                return cur.version
-                            }
-                        },
-                        peer
-                    }).then(x => {
-                        x.subscribe(async update => {
-                            console.log(`got external update about ${url}`)
+                    if (!start_something()) return
 
-                            if (update.body) update.body = update.body_text
-                            if (update.patches) for (let p of update.patches) p.content = p.content_text
+                    await braid_text.put(url, { ...update, peer, merge_type: 'dt' })
 
-                            // console.log(`update: ${JSON.stringify(update, null, 4)}`)
-                            if (update.version.length === 0) return
-                            if (update.version.length !== 1) throw 'unexpected'
 
-                            if (!start_something()) return
-
-                            await braid_text.put(url, { ...update, peer, merge_type: 'dt' })
-
-                            if (done) {
-                                let [a, seq] = update.version[0].split('-')
-                                if (waiting_for_versions[a] <= seq) delete waiting_for_versions[a]
-                                if (!Object.keys(waiting_for_versions).length) {
-                                    console.log('got everything we were waiting for..')
-                                    done()
-                                    done = null
-                                }
-                            }
-
-                            signal_file_needs_writing()
-                            finish_something()
-                        }, e => (e?.name !== "AbortError") && crash(e))
-                    }).catch(e => (e?.name !== "AbortError") && crash(e))
-                }
-            })
-            finish_something()
+                    signal_file_needs_writing()
+                    finish_something()
+                }, e => (e?.name !== "AbortError") && crash(e))
+            }).catch(e => (e?.name !== "AbortError") && crash(e))
         }
 
         // for config and errors file, listen for web changes
