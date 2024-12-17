@@ -589,22 +589,22 @@ async function proxy_url(url) {
 }
 
 async function ensure_path(path) {
-    try {
-        await require("fs").promises.mkdir(path, { recursive: true })
-    } catch (e) {
-        var parts = path.split('/').slice(1)
-        for (var i = 1; i <= parts.length; i++) {
-            var partial = '/' + parts.slice(0, i).join('/')
+    var parts = path.split('/').slice(1)
+    for (var i = 1; i <= parts.length; i++) {
+        var partial = '/' + parts.slice(0, i).join('/')
+        await within_file_lock(partial, async () => {
+            try {
+                let stat = await require("fs").promises.stat(partial)
+                if (stat.isDirectory()) return // good
 
-            if (!(await is_dir(partial))) {
-                await within_file_lock(normalize_url(partial), async () => {
-                    let temp = `${temp_folder}/${Math.random().toString(36).slice(2)}`
-                    await require('fs').promises.rename(partial, temp)
-                    await require("fs").promises.mkdir(partial)
-                    await require('fs').promises.rename(temp, partial + '/index')
-                })
+                let temp = `${temp_folder}/${Math.random().toString(36).slice(2)}`
+                await require('fs').promises.rename(partial, temp)
+                await require("fs").promises.mkdir(partial)
+                await require('fs').promises.rename(temp, partial + '/index')
+            } catch (e) {
+                await require("fs").promises.mkdir(partial)
             }
-        }
+        })
     }
 }
 
