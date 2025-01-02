@@ -320,7 +320,13 @@ async function proxy_url(url) {
             for (let a of aborts) a.abort()
             await wait_promise
             if (braid_text_get_options) await braid_text.forget(url, braid_text_get_options)
-            await braid_text.delete(url)
+
+            delete braid_text.cache[url]
+            for (let f of await braid_text.get_files_for_key(url)) {
+                console.log(`trying to delete ${f}`)
+                try { await require('fs').promises.unlink(f) } catch (e) {}
+            }
+
             try { await require('fs').promises.unlink(meta_path) } catch (e) {}
             try { await require('fs').promises.unlink(await get_fullpath()) } catch (e) {}
         }
