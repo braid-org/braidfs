@@ -582,6 +582,44 @@ async function proxy_url(url) {
             }).catch(e => (e?.name !== "AbortError") && crash(e))
         }
 
+        // send them stuff we have but they don't
+        if (is_external_link) send_new_stuff()
+        async function send_new_stuff() {
+            if (!start_something()) return
+            try {
+                let a = new AbortController()
+                aborts.add(a)
+                var r = await braid_fetch(url, {
+                    signal: a.signal,
+                    method: "HEAD",
+                    headers: {
+                        Accept: 'text/plain',
+                        ...config.domains?.[(new URL(url)).hostname]?.auth_headers,
+                    },
+                    retry: true
+                })
+                aborts.delete(a)
+
+                if (r.headers.get('editable') === 'false') {
+                    console.log('do not send updates for read-only file: ' + url)
+                    return
+                }
+
+                var chain = Promise.resolve()
+                braid_text.get(url, braid_text_get_options = {
+                    parents: r.headers.get('version') && JSON.parse(`[${r.headers.get('version')}]`),
+                    merge_type: 'dt',
+                    peer,
+                    subscribe: async (u) => {
+                        if (u.version.length) chain = chain.then(() => send_out({...u, peer}))
+                    },
+                })
+            } catch (e) {
+                if (e?.name !== "AbortError") crash(e)
+            }
+            finish_something()            
+        }
+
         // for config and errors file, listen for web changes
         if (!is_external_link) braid_text.get(url, braid_text_get_options = {
             merge_type: 'dt',
