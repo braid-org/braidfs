@@ -29,7 +29,7 @@ The magic happens through bi-directional synchronization:
 This creates a seamless experience where you can use standard text editors and file tools with web resources.
 
 This video demonstrates syncing and unsyncing some resources from the command line, and seeing the files appear and disappear in the file system:
-https://github.com/user-attachments/assets/2a7a4ae3-5e52-465a-980d-ab9dc52902aa
+https://github.com/user-attachments/assets/4fb36208-e0bd-471b-b47b-bbeee20e4f3f
 
 ## Installation
 
