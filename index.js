@@ -28,9 +28,9 @@ if (require('fs').existsSync(proxy_base)) {
     }
 } else {
     config = {
-        port: 10000,
         sync: {},
         domains: { 'example.com': { auth_headers: { Cookie: "secret_pass" } } },
+        port: 45678,
         scan_interval_ms: 1000 * 20,
     }
     require('fs').mkdirSync(braidfs_config_dir, { recursive: true })
@@ -43,10 +43,10 @@ require('fs').mkdirSync(temp_folder, { recursive: true })
 
 // process command line args
 let to_run_in_background = process.platform === 'darwin' ? `
-To run server in background:
-    launchctl submit -l org.braid.braidfs -- braidfs serve` : ''
+To run daemon in background:
+    launchctl submit -l org.braid.braidfs -- braidfs run` : ''
 let argv = process.argv.slice(2)
-if (argv.length === 1 && argv[0] === 'serve') {
+if (argv.length === 1 && argv[0].match(/^(run|serve)$/)) {
     return main()
 } else if (argv.length && argv.length % 2 == 0 && argv.every((x, i) => i % 2 != 0 || x.match(/^(sync|unsync)$/))) {
     let operations = []
@@ -71,13 +71,13 @@ if (argv.length === 1 && argv[0] === 'serve') {
         }).then(() => console.log(`${operation}ed: ${url}`))
     )).then(() => console.log('All operations completed successfully.'))
         .catch(() => {
-            return console.log(`The braidfs server does not appear to be running.
+            return console.log(`The braidfs daemon does not appear to be running.
 You can run it with:
-    braidfs serve${to_run_in_background}`)
+    braidfs run${to_run_in_background}`)
         })
 } else {
     return console.log(`Usage:
-    braidfs serve
+    braidfs run
     braidfs sync <URL>
     braidfs unsync <URL>${to_run_in_background}`)
 }
@@ -106,7 +106,7 @@ async function main() {
 
         braid_text.serve(req, res, { key: normalize_url(url) })
     }).listen(config.port, () => {
-        console.log(`server started on port ${config.port}`)
+        console.log(`daemon started on port ${config.port}`)
         if (!config.allow_remote_access) console.log('!! only accessible from localhost !!')
 
         proxy_url('.braidfs/config').then(() => {
@@ -159,7 +159,7 @@ async function main() {
         watch_files()
         setTimeout(scan_files, 1200)
     }).on('error', e => {
-        if (e.code === 'EADDRINUSE') return console.log(`server already running on port ${config.port}`)
+        if (e.code === 'EADDRINUSE') return console.log(`port ${config.port} is in use`)
         throw e
     })
 }
