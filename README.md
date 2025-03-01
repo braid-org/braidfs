@@ -1,39 +1,47 @@
-# braidfs
+# BraidFS: Braid your Filesystem with the Web
 
-Sync Braid URLs as files on disk.
+Provides interoperability between **web pages** via http and your **OS filesystem**.
+  - Using collaborative CRDTs and the Braid extensions for HTTP.
 
-Like Dropbox (file sync), plus Google Docs (collaborative editing), all over HTTP.
+The `braidfs` daemon performs bi-directional synchronization between remote Braid-HTTP resources and your local filesystem.
 
-## How It Works
+### Web resources map onto your filesystem
 
-braidfs uses Braid HTTP — a proposed protocol extension to HTTP that enables real-time synchronization. To learn more about Braid HTTP, visit [https://braid.org](https://braid.org).
+It creates a `~/http` folder in your home directory to synchronize webpages with:
 
-braidfs creates a bi-directional sync between remote Braid HTTP resources and your local filesystem. When you run the braidfs daemon, it maintains a directory at `~/http` that mirrors resources from various web servers. The content in `~/http` is organized by domain. For example:
 ```
 ~/http/
-  ├── .braidfs/
-  │   └── config
   ├── example.com/
-  │   ├── document.txt
-  │   └── references/
-  │       └── other.txt
-  └── localhost:12345/
-      └── notes.md
+  │   ├── document.html
+  │   ├── notes.md
+  │   └── assets/
+  │       └── style.css
+  └── braid.org/
+      └── meeting-53
 ```
-
-The magic happens through bi-directional synchronization:
-
-- When you edit a file locally (e.g., `~/http/example.com/document.txt`), braidfs automatically sends the changes to the corresponding Braid URL (`https://example.com/document.txt`).
-- When the remote resource changes, the Braid HTTP protocol notifies braidfs, and your local file is updated to match.
-
-This creates a seamless experience where you can use standard text editors and file tools with web resources.
-
-This video demonstrates syncing and unsyncing some resources from the command line, and seeing the files appear and disappear in the file system:
 
 
 https://github.com/user-attachments/assets/4fb36208-e0bd-471b-b47b-bbeee20e4f3f
 
 
+
+### Two-way sync edits between files and web
+
+As long as `braidfs` is running, it will keep the file and web resources in
+sync!
+
+ - Edit to the file → web resource
+ - Edit to the web resource → file
+
+> video of editing
+
+Each edit to the file is diffed and sent as a CRDT patch, so you can edit
+files offline, and even collaboratively edit them, with one caveat:
+
+#### Caveat
+
+For the period of time that you have edited the file in your editor but not
+saved it, external edits cannot be integrated.
 
 ## Installation
 
@@ -51,13 +59,13 @@ To start the braidfs daemon:
 braidfs run
 ```
 
-To sync a Braid URL:
+To sync a URL:
 
 ```
 braidfs sync <url>
 ```
 
-When you run `braidfs sync <url>`, it creates a local file mirroring the content at that Braid URL. The local file path is determined by the URL structure. For example:
+When you run `braidfs sync <url>`, it creates a local file mirroring the content at that URL. The local file path is determined by the URL structure. For example:
 
 - If you sync `https://example.com/path/file.txt`
 - It creates a local file at `~/http/example.com/path/file.txt`
@@ -72,7 +80,7 @@ braidfs unsync <url>
 
 braidfs looks for a configuration file at `~/http/.braidfs/config`, or creates it if it doesn't exist. You can set the following options:
 
-- `sync`: An object where the keys are Braid URLs to sync, and the values are simply `true`
+- `sync`: An object where the keys are URLs to sync, and the values are simply `true`
 - `domains`: An object for setting domain-specific configurations, including authentication headers
 - `port`: The port number for the internal daemon (default: 45678)
 
