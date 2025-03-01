@@ -79,7 +79,7 @@ braidfs unsync <url>
 braidfs looks for a configuration file at `~/http/.braidfs/config`, or creates it if it doesn't exist. You can set the following options:
 
 - `sync`: An object where the keys are URLs to sync, and the values are simply `true`
-- `domains`: An object for setting domain-specific configurations, including authentication headers
+- `cookies`: An object for setting domain-specific cookies for authentication
 - `port`: The port number for the internal daemon (default: 45678)
 
 Example `config`:
@@ -90,19 +90,15 @@ Example `config`:
     "https://example.com/document1.txt": true,
     "https://example.com/document2.txt": true
   },
-  "domains": {
-    "example.com": {
-      "auth_headers": {
-        "Cookie": "secret_pass"
-      }
-    }
+  "cookies": {
+    "example.com": "secret_pass"
   },
   "port": 45678
 }
 ```
 
-The `domains` configuration allows you to set authentication headers for specific domains. In the example above, any requests to `example.com` will include the specified `Cookie` header.
+The `cookies` configuration allows you to set authentication cookies for specific domains. In the example above, any requests to `example.com` will include the specified cookie value.
 
 ## Security
 
-braidfs is designed to run locally and only accepts connections from localhost (127.0.0.1 or ::1) for security reasons. The `domains` configuration enables secure communication with servers that require authentication by allowing you to set domain-specific headers.
+braidfs is designed to run locally and only accepts connections from localhost (127.0.0.1 or ::1) for security reasons. The `cookies` configuration enables secure communication with servers that require authentication by allowing you to set domain-specific cookie values.

@@ -23,13 +23,24 @@ var config = null,
 if (require('fs').existsSync(proxy_base)) {
     try {
         config = JSON.parse(require('fs').readFileSync(braidfs_config_file, 'utf8'))
+
+        // for 0.0.55 users upgrading to 0.0.56,
+        // which changes the config "domains" key to "cookies",
+        // and condenses its structure a bit
+        if (config.domains) {
+            config.cookies = Object.fromEntries(Object.entries(config.domains).map(([k, v]) => {
+                if (v.auth_headers?.Cookie) return [k, v.auth_headers.Cookie]
+            }).filter(x => x))
+            delete config.domains
+            require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
+        }
     } catch (e) {
         return console.log(`Cannot parse the configuration file at: ${braidfs_config_file}`)
     }
 } else {
     config = {
         sync: {},
-        domains: { 'example.com': { auth_headers: { Cookie: "secret_pass" } } },
+        cookies: { 'example.com': 'secret_pass' },
         port: 45678,
         scan_interval_ms: 1000 * 20,
     }
@@ -132,12 +143,12 @@ async function main() {
                         // have the appropriate connections reconnect
                         let changed = new Set()
                         // any old domains no longer exist?
-                        for (let domain of Object.keys(prev.domains ?? {}))
-                            if (!config.domains?.[domain]) changed.add(domain)
+                        for (let domain of Object.keys(prev.cookies ?? {}))
+                            if (!config.cookies?.[domain]) changed.add(domain)
                         // any new domains not like the old?
-                        for (let [domain, v] of Object.entries(config.domains ?? {}))
-                            if (!prev.domains?.[domain]
-                                || JSON.stringify(prev.domains[domain]) !== JSON.stringify(v))
+                        for (let [domain, v] of Object.entries(config.cookies ?? {}))
+                            if (!prev.cookies?.[domain]
+                                || JSON.stringify(prev.cookies[domain]) !== JSON.stringify(v))
                                 changed.add(domain)
                         // ok, have every domain which has changed reconnect
                         for (let [path, x] of Object.entries(proxy_url.cache))
@@ -388,7 +399,7 @@ async function proxy_url(url) {
                         headers: {
                             "Merge-Type": "dt",
                             "Content-Type": 'text/plain',
-                            ...config.domains?.[(new URL(url)).hostname]?.auth_headers,
+                            ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
                         },
                         method: "PUT",
                         retry: true,
@@ -542,7 +553,7 @@ async function proxy_url(url) {
                 headers: {
                     "Merge-Type": "dt",
                     Accept: 'text/plain',
-                    ...config.domains?.[(new URL(url)).hostname]?.auth_headers,
+                    ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname]),
                 },
                 subscribe: true,
                 retry: {
@@ -594,7 +605,7 @@ async function proxy_url(url) {
                     method: "HEAD",
                     headers: {
                         Accept: 'text/plain',
-                        ...config.domains?.[(new URL(url)).hostname]?.auth_headers,
+                        ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname]),
                     },
                     retry: true
                 })
