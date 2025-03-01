@@ -41,6 +41,12 @@ files offline, and even collaboratively edit them, with one caveat:
 For the period of time that you have edited the file in your editor but not
 saved it, external edits cannot be integrated.
 
+#### Consistency Guarantees
+
+- **Offline edits**: Changes made while offline are synchronized when connectivity returns
+- **Daemon status**: Edits made while the daemon is stopped are detected and synchronized when it restarts
+- **Race conditions**: If you save changes at the exact moment `braidfs` is writing to a file, the result depends on filesystem timing; the final state will become the new baseline. All saved changes outside this time will get properly detected and merged.
+
 ## Installation
 
 Install braidfs globally using npm:
@@ -76,10 +82,10 @@ braidfs unsync <url>
 
 ## Configuration
 
-braidfs looks for a configuration file at `~/http/.braidfs/config`, or creates it if it doesn't exist. You can set the following options:
+When started, `braidfs` looks for a configuration file at `~/http/.braidfs/config`, or creates it if it doesn't exist. You can set the following options:
 
 - `sync`: An object where the keys are URLs to sync, and the values are simply `true`
-- `cookies`: An object for setting domain-specific cookies for authentication
+- `cookies`: An object that maps domains to cookie values that will be sent with every HTTP request to that domain. For example, if you set `"example.com": "secret_pass"`, then all requests to example.com will include the header `Cookie: secret_pass`. This is useful for accessing protected resources that require authentication.
 - `port`: The port number for the internal daemon (default: 45678)
 
 Example `config`:
@@ -97,8 +103,6 @@ Example `config`:
 }
 ```
 
-The `cookies` configuration allows you to set authentication cookies for specific domains. In the example above, any requests to `example.com` will include the specified cookie value.
+### Live Configuration Updates
 
-## Security
-
-braidfs is designed to run locally and only accepts connections from localhost (127.0.0.1 or ::1) for security reasons. The `cookies` configuration enables secure communication with servers that require authentication by allowing you to set domain-specific cookie values.
+The configuration file can be edited and saved while the daemon is running. Changes are automatically detected and applied immediately without requiring a restart. The only exception is the `port` setting, which requires restarting the daemon to change.
