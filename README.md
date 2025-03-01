@@ -20,8 +20,7 @@ It creates a `~/http` folder in your home directory to synchronize webpages with
       └── meeting-53
 ```
 
-
-[file_sync.webm](https://github.com/user-attachments/assets/0cee488f-caac-4d74-aa01-baee2b035baf)
+[file_sync.webm](https://github.com/user-attachments/assets/6af12249-7d2f-4a22-9a24-ffc3a53b798d)
 
 
 ### Two-way sync edits between files and web
