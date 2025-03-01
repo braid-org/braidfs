@@ -30,6 +30,7 @@ sync!
 
  - Edit to the file → web resource
  - Edit to the web resource → file
+[file_and_web.webm](https://github.com/user-attachments/assets/9e6267a1-c310-4199-898c-cf229471f53e)
 
 Each edit to the file is diffed and sent as a CRDT patch, so you can edit
 files offline, and even collaboratively edit them, with one caveat:
