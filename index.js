@@ -499,11 +499,17 @@ async function proxy_url(url) {
                         file_needs_writing = false
                         let { version, body } = await braid_text.get(url, {})
                         if (!v_eq(version, file_last_version)) {
-                            console.log(`writing file ${fullpath}`)
-
-                            // make sure the file has what it had before
+                            // let's do a final check to see if anything has changed
+                            // before writing out a new version of the file
                             let text = await require('fs').promises.readFile(fullpath, { encoding: 'utf8' })
-                            if (self.file_last_text != text) crash(new Error('File changed without us noticing.'))
+                            if (self.file_last_text != text) {
+                                // if the text is different, let's read it first..
+                                file_needs_reading = true
+                                file_needs_writing = true
+                                continue
+                            }
+
+                            console.log(`writing file ${fullpath}`)
 
                             try { if (await is_read_only(fullpath)) await set_read_only(fullpath, false) } catch (e) { }
 
