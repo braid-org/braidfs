@@ -21,8 +21,7 @@ It creates a `~/http` folder in your home directory to synchronize webpages with
 ```
 
 
-https://github.com/user-attachments/assets/4fb36208-e0bd-471b-b47b-bbeee20e4f3f
-
+[file_sync.webm](https://github.com/user-attachments/assets/0cee488f-caac-4d74-aa01-baee2b035baf)
 
 
 ### Two-way sync edits between files and web
