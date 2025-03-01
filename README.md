@@ -33,8 +33,6 @@ sync!
  - Edit to the file → web resource
  - Edit to the web resource → file
 
-> video of editing
-
 Each edit to the file is diffed and sent as a CRDT patch, so you can edit
 files offline, and even collaboratively edit them, with one caveat:
 
