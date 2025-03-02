@@ -1,95 +1,146 @@
 # BraidFS: Braid your Filesystem with the Web
 
-Provides interoperability between **web pages** via http and your **OS filesystem**.
-  - Using collaborative CRDTs and the Braid extensions for HTTP.
+Synchronize ***WWW Pages*** with your ***OS Filesystem***.
 
-The `braidfs` daemon performs bi-directional synchronization between remote Braid-HTTP resources and your local filesystem.
+The `braidfs` daemon performs bi-directional synchronization between remote
+[Braided](https://braid.org) HTTP resources and your local filesystem.  It uses
+the [braid-text](https://github.com/braid-org/braid-text) library for
+high-performance, peer-to-peer collaborative text synchronization over HTTP,
+and keeps your filesystem two-way synchronized with the fully-consistent CRDT.
 
-### Web resources map onto your filesystem
+### Sync the web into your `~/http` folder
 
-It creates a `~/http` folder in your home directory to synchronize webpages with:
+Braidfs synchronizes webpages to a local `~/http` folder:
 
 ```
 ~/http/
-  ├── example.com/
-  │   ├── document.html
-  │   ├── notes.md
-  │   └── assets/
-  │       └── style.css
-  └── braid.org/
-      └── meeting-53
+  ├── braid.org/
+  |   └── meeting-53
+  └── example.com/
+      ├── document.html
+      ├── notes.md
+      └── assets/
+          └── style.css
 ```
 
-[file_sync.webm](https://github.com/user-attachments/assets/6af12249-7d2f-4a22-9a24-ffc3a53b798d)
+Add a new page with the `braidfs sync <url>` command:
 
+![](https://braid.org/files/braidfs-demo1.webp)
 
-### Two-way sync edits between files and web
+Unsync a page with `braidfs unsync <url>`.
 
-As long as `braidfs` is running, it will keep the file and web resources in
-sync!
+### Edit remote state as a local file—and vice versa
 
- - Edit to the file → web resource
- - Edit to the web resource → file
+Any synced page can be edited with your favorite local text editor—like
+VSCode, Emacs, Vim, Sublime, TextWrangler, BBEdit, Pico, Nano, or Notepad—and
+edits propagate live to the web, and vice-versa.
 
-[file_and_web.webm](https://github.com/user-attachments/assets/a0b10764-2831-40c2-91ee-8a135475dc75)
+Here's a demo of VSCode editing [braid.org/braidfs](https://braid.org/braidfs):
 
+![](https://braid.org/files/braidfs-demo2.webp)
 
-Each edit to the file is diffed and sent as a CRDT patch, so you can edit
-files offline, and even collaboratively edit them, with one caveat:
+After VSCode saves the file, braidfs immediately computes a diff of the edits
+and sends them as patches over Braid HTTP to https://braid.org/braidfs:
 
-#### Caveat
+```
+PUT /braidfs
+Version: "n0j5kg9g23-100"
+Parents: "ercurwxmz7g-37"
+Content-Length: 9
+Content-Range: text [32:32]
 
-For the period of time that you have edited the file in your editor but not
-saved it, external edits cannot be integrated.
+ with the
 
-#### Consistency Guarantees
+```
 
-- **Offline edits**: Changes made while offline are synchronized when connectivity returns
-- **Daemon status**: Edits made while the daemon is stopped are detected and synchronized when it restarts
-- **Race conditions**: If you save changes at the exact moment `braidfs` is writing to a file, the result depends on filesystem timing; the final state will become the new baseline. All saved changes outside this time will get properly detected and merged.
+Conversely, remote edits instantly update the local filesystem, and thus the
+editor.
 
-## Installation
+```
+HTTP 200 OK
+Version: "ercurwxmz7g-41"
+Parents: "n0j5kg9g23-100"
+Content-Length: 4
+Content-Range: text [41:41]
 
-Install braidfs globally using npm:
+ Web
+
+```
+
+Edits are formatted as simple
+[Braid-HTTP](https://github.com/braid-org/braid-spec).  To participate in the
+network, you can even author these messages by hand, from your own code, using
+simple GETs and PUTs.
+
+### Conflict-Free Collaborative Editing
+
+Braidfs has a full [braid-text](https://github.com/braid-org/braid-text) peer
+within it, providing high-performance collaborative text editing on the
+diamond-types CRDT over the Braid HTTP protocol, guaranteeing conflict-free
+editing with multiple editors, whether online or offline.
+
+A novel trick using [Time Machines](https://braid.org/time-machines) lets us
+making regular text editors conflict-free, as well, without speaking CRDT!
+This means that you can edit a file in Emacs, even while other people edit the
+same file, without write conflicts, and without adding CRDT code to Emacs.
+(Still under development.)
+
+# Installation and Usage
+
+Install the `braidfs` command onto your computer with npm:
 
 ```
 npm install -g braidfs
 ```
 
-## Usage
-
-To start the braidfs daemon:
+Then you can start the braidfs daemon with:
 
 ```
 braidfs run
 ```
 
-To sync a URL:
+To run it automatically as a background service on MacOS, use:
+
+```
+ # Todo: fix this.  Not working yet.
+ # launchctl submit -l org.braid.braidfs -- braidfs run
+```
+
+### Adding and removing URLs
+
+Sync a URL with:
 
 ```
 braidfs sync <url>
 ```
 
-When you run `braidfs sync <url>`, it creates a local file mirroring the content at that URL. The local file path is determined by the URL structure. For example:
-
-- If you sync `https://example.com/path/file.txt`
-- It creates a local file at `~/http/example.com/path/file.txt`
-
-To unsync a URL:
+Unsync a URL with:
 
 ```
 braidfs unsync <url>
 ```
 
-## Configuration
+URLs map to files with a simple pattern:
 
-When started, `braidfs` looks for a configuration file at `~/http/.braidfs/config`, or creates it if it doesn't exist. You can set the following options:
+- url: `https://<domain>/<path>`
+- file: `~/http/<domain>/<path>`
 
-- `sync`: An object where the keys are URLs to sync, and the values are simply `true`
-- `cookies`: An object that maps domains to cookie values that will be sent with every HTTP request to that domain. For example, if you set `"example.com": "secret_pass"`, then all requests to example.com will include the header `Cookie: secret_pass`. This is useful for accessing protected resources that require authentication.
-- `port`: The port number for the internal daemon (default: 45678)
 
-Example `config`:
+Examples:
+
+| URL | File |
+| --- | --- |
+| `https://example.com/path/file.txt` | `~/http/example.com/path/file.txt` |
+| `https://braid.org:8939/path` | `~/http/braid.org:8939/path` |
+| `https://braid.org/` | `~/http/braid.org/index` |
+
+If you sync a URL path to a directory containing items within it, the
+directory will be named `/index`.
+
+
+### Configuration
+
+The config file lives at `~/http/.braidfs/config`.  It looks like this:
 
 ```json
 {
@@ -98,12 +149,34 @@ Example `config`:
     "https://example.com/document2.txt": true
   },
   "cookies": {
-    "example.com": "secret_pass"
+    "example.com": "secret_pass",
+    "braid.org": "client=hsu238s88adhab3afhalkj3jasdhfdf"
   },
   "port": 45678
 }
 ```
 
-### Live Configuration Updates
+These are the options:
+- `sync`: A set of URLs to synchronize.  Each one maps to `true`.
+- `cookies`: Braidfs will use these cookie when connecting to the domains.
+  - Put your login session cookies here.
+  - To find your cookie for a website:
+    - Log into the website with a browser
+    - Open the Javascript console and run `document.cookie`
+    - That's your cookie.  Copy paste it into  your config file.
+- `port`: The port number for the internal daemon (default: 45678)
 
-The configuration file can be edited and saved while the daemon is running. Changes are automatically detected and applied immediately without requiring a restart. The only exception is the `port` setting, which requires restarting the daemon to change.
+This config file live-updates, too.  Changes are automatically detected and
+applied to the running braidfs daemon.  The only exception is the `port`
+setting, which requires restarting the daemon after a change.
+
+
+## Limitations & Future Work
+
+- Doesn't sync binary yet.  Just text text mime-types:
+  `text/*`, `application/html`, and `application/json`
+  - Binary blob support would be pretty easy and nice to add.
+  - Contact us if you'd like to add it!
+- Doesn't update your editor's text with remote updates until you save
+  - It's not hard to make it live-update, though, so that you can see your edits integrated with others' before you save.
+  - Contact us if you'd like to help!  It would be a fun project!
