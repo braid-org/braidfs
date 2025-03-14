@@ -1,13 +1,8 @@
 #!/usr/bin/env node
 
-console.log(`braidfs version: ${require(`${__dirname}/package.json`).version}`)
-
 var { diff_main } = require(`${__dirname}/diff.js`),
     braid_text = require("braid-text"),
     braid_fetch = require('braid-http').fetch
-
-process.on("unhandledRejection", (x) => console.log(`unhandledRejection: ${x.stack}`))
-process.on("uncaughtException", (x) => console.log(`uncaughtException: ${x.stack}`))
 
 var proxy_base = `${require('os').homedir()}/http`,
     braidfs_config_dir = `${proxy_base}/.braidfs`,
@@ -57,6 +52,41 @@ let to_run_in_background = process.platform === 'darwin' ? `
 To run daemon in background:
     launchctl submit -l org.braid.braidfs -- braidfs run` : ''
 let argv = process.argv.slice(2)
+
+if (argv[0] === 'editing') {
+    return (async () => {
+        var filename = argv[1]
+        if (!require('path').isAbsolute(filename))
+            filename = require('path').resolve(process.cwd(), filename)
+        var input_string = await new Promise(done => {
+            const chunks = []
+            process.stdin.on('data', chunk => chunks.push(chunk))
+            process.stdin.on('end', () => done(Buffer.concat(chunks).toString()))
+        })
+
+        var r = await fetch(`http://localhost:${config.port}/.braidfs/get_version/${encodeURIComponent(filename)}/${encodeURIComponent(sha256(input_string))}`)
+        if (!r.ok) throw new Error(`bad status: ${r.status}`)
+        console.log(await r.text())
+    })()
+} else if (argv[0] === 'edited') {
+    return (async () => {
+        var filename = argv[1]
+        if (!require('path').isAbsolute(filename))
+            filename = require('path').resolve(process.cwd(), filename)
+        var parent_version = argv[2]
+        var input_string = await new Promise(done => {
+            const chunks = []
+            process.stdin.on('data', chunk => chunks.push(chunk))
+            process.stdin.on('end', () => done(Buffer.concat(chunks).toString()))
+        })
+        var r = await fetch(`http://localhost:${config.port}/.braidfs/set_version/${encodeURIComponent(filename)}/${encodeURIComponent(parent_version)}`, { method: 'PUT', body: input_string })
+        if (!r.ok) throw new Error(`bad status: ${r.status}`)
+        console.log(await r.text())
+    })()
+}
+
+console.log(`braidfs version: ${require(`${__dirname}/package.json`).version}`)
+
 if (argv.length === 1 && argv[0].match(/^(run|serve)$/)) {
     return main()
 } else if (argv.length && argv.length % 2 == 0 && argv.every((x, i) => i % 2 != 0 || x.match(/^(sync|unsync)$/))) {
@@ -94,28 +124,82 @@ You can run it with:
 }
 
 async function main() {
+    process.on("unhandledRejection", (x) => console.log(`unhandledRejection: ${x.stack}`))
+    process.on("uncaughtException", (x) => console.log(`uncaughtException: ${x.stack}`))
     require('http').createServer(async (req, res) => {
-        console.log(`${req.method} ${req.url}`)
+        try {
+            console.log(`${req.method} ${req.url}`)
 
-        if (req.url === '/favicon.ico') return
+            if (req.url === '/favicon.ico') return
 
-        if (req.socket.remoteAddress !== '127.0.0.1' && req.socket.remoteAddress !== '::1') {
-            res.writeHead(403, { 'Content-Type': 'text/plain' })
-            return res.end('Access denied: only accessible from localhost')
+            if (req.socket.remoteAddress !== '127.0.0.1' && req.socket.remoteAddress !== '::1') {
+                res.writeHead(403, { 'Content-Type': 'text/plain' })
+                return res.end('Access denied: only accessible from localhost')
+            }
+
+            // Free the CORS
+            free_the_cors(req, res)
+            if (req.method === 'OPTIONS') return
+
+            var url = req.url.slice(1)
+
+            var m = url.match(/^\.braidfs\/get_version\/([^\/]*)\/([^\/]*)/)
+            if (m) {
+                var fullpath = decodeURIComponent(m[1])
+                var hash = decodeURIComponent(m[2])
+
+                var path = require('path').relative(proxy_base, fullpath)
+                var proxy = await proxy_url.cache[normalize_url(path)]
+                var version = proxy?.hash_to_version_cache.get(hash)?.version
+                return res.end(JSON.stringify(version ?? null))
+            }
+
+            var m = url.match(/^\.braidfs\/set_version\/([^\/]*)\/([^\/]*)/)
+            if (m) {
+                var fullpath = decodeURIComponent(m[1])
+                var path = require('path').relative(proxy_base, fullpath)
+                var proxy = await proxy_url.cache[normalize_url(path)]
+
+                var parents = JSON.parse(decodeURIComponent(m[2]))
+                var parent_text = (await braid_text.get(proxy.url,
+                    { parents })).body
+
+                var text = await new Promise(done => {
+                    const chunks = []
+                    req.on('data', chunk => chunks.push(chunk))
+                    req.on('end', () => done(Buffer.concat(chunks).toString()))
+                })
+
+                var patches = diff(parent_text, text)
+
+                if (patches.length) {
+                    var peer = Math.random().toString(36).slice(2)
+                    var char_count = patches_to_code_points(patches, parent_text)
+                    var version = [peer + "-" + char_count]
+                    await braid_text.put(proxy.url, { version, parents, patches, peer, merge_type: 'dt' })
+
+                    // may be able to do this more efficiently.. we want to make sure we're capturing a file write that is after our version was written.. there may be a way we can avoid calling file_needs_writing here
+                    var stat = await new Promise(done => {
+                        proxy.file_written_cbs.push(done)
+                        proxy.signal_file_needs_writing()
+                    })
+
+                    res.writeHead(200, { 'Content-Type': 'application/json' })
+                    return res.end(stat.mtimeMs.toString())
+                } else return res.end('null')
+            }
+
+            if (url !== '.braidfs/config' && url !== '.braidfs/errors') {
+                res.writeHead(404, { 'Content-Type': 'text/html' })
+                return res.end('Nothing to see here. You can go to <a href=".braidfs/config">.braidfs/config</a> or <a href=".braidfs/errors">.braidfs/errors</a>')
+            }
+
+            braid_text.serve(req, res, { key: normalize_url(url) })
+        } catch (e) {
+            console.log(`e = ${e.stack}`)
+            res.writeHead(500, { 'Error-Message': '' + e })
+            res.end('' + e)
         }
-
-        // Free the CORS
-        free_the_cors(req, res)
-        if (req.method === 'OPTIONS') return
-
-        var url = req.url.slice(1)
-
-        if (url !== '.braidfs/config' && url !== '.braidfs/errors') {
-            res.writeHead(404, { 'Content-Type': 'text/html' })
-            return res.end('Nothing to see here. You can go to <a href=".braidfs/config">.braidfs/config</a> or <a href=".braidfs/errors">.braidfs/errors</a>')
-        }
-
-        braid_text.serve(req, res, { key: normalize_url(url) })
     }).listen(config.port, () => {
         console.log(`daemon started on port ${config.port}`)
         if (!config.allow_remote_access) console.log('!! only accessible from localhost !!')
@@ -263,6 +347,9 @@ async function scan_files() {
     scan_files.timeout = setTimeout(scan_files, config.scan_interval_ms ?? (20 * 1000))
 
     async function f(fullpath) {
+        path = require('path').relative(proxy_base, fullpath)
+        if (skip_file(path)) return
+
         let stat = await require('fs').promises.stat(fullpath, { bigint: true })
         if (stat.isDirectory()) {
             let found
@@ -270,9 +357,6 @@ async function scan_files() {
                 found ||= await f(`${fullpath}/${file}`)
             return found
         } else {
-            path = require('path').relative(proxy_base, fullpath)
-            if (skip_file(path)) return
-
             var proxy = await proxy_url.cache[normalize_url(path)]
             if (!proxy) return await trash_file(fullpath, path)
 
@@ -343,7 +427,7 @@ async function proxy_url(url) {
         }
         await old_unproxy
 
-        var self = {}
+        var self = {url}
 
         console.log(`proxy_url: ${url}`)
 
@@ -373,6 +457,23 @@ async function proxy_url(url) {
         var file_needs_reading = true,
             file_needs_writing = null,
             file_loop_pump_lock = 0
+        self.file_written_cbs = []
+
+        // store a recent mapping of content-hashes to their versions,
+        // to support the command line: braidfs editing filename < file
+        self.hash_to_version_cache = new Map()
+        function add_to_version_cache(text, version) {
+            var hash = sha256(text)
+            self.hash_to_version_cache.delete(hash)
+            self.hash_to_version_cache.set(hash, { version, time: Date.now() })
+
+            var too_old = Date.now() - 30000
+            for (var [key, value] of self.hash_to_version_cache) {
+                if (value.time > too_old ||
+                    self.hash_to_version_cache.size <= 1) break
+                self.hash_to_version_cache.delete(key)
+            }
+        }
 
         self.signal_file_needs_reading = () => {
             if (freed) return
@@ -380,7 +481,7 @@ async function proxy_url(url) {
             file_loop_pump()
         }
 
-        function signal_file_needs_writing() {
+        self.signal_file_needs_writing = () => {
             if (freed) return
             file_needs_writing = true
             file_loop_pump()
@@ -434,7 +535,7 @@ async function proxy_url(url) {
                         file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
 
                         // sanity check
-                        if (file_last_digest && require('crypto').createHash('sha256').update(self.file_last_text).digest('base64') != file_last_digest) throw new Error('file_last_text does not match file_last_digest')
+                        if (file_last_digest && sha256(self.file_last_text) != file_last_digest) throw new Error('file_last_text does not match file_last_digest')
                     } else if (await require('fs').promises.access(fullpath).then(() => 1, () => 0)) {
                         // file exists, but not meta file
                         file_last_version = []
@@ -479,12 +580,16 @@ async function proxy_url(url) {
                             var parents = file_last_version
                             file_last_version = version
 
+                            add_to_version_cache(text, version)
+
                             send_out({ version, parents, patches, peer })
 
                             await braid_text.put(url, { version, parents, patches, peer, merge_type: 'dt' })
 
-                            await require('fs').promises.writeFile(meta_path, JSON.stringify({ version: file_last_version, digest: require('crypto').createHash('sha256').update(self.file_last_text).digest('base64') }))
+                            await require('fs').promises.writeFile(meta_path, JSON.stringify({ version: file_last_version, digest: sha256(self.file_last_text) }))
                         } else {
+                            add_to_version_cache(text, file_last_version)
+
                             console.log(`no changes found in: ${fullpath}`)
                             if (stat_eq(stat, self.file_last_stat)) {
                                 if (Date.now() > (self.file_ignore_until ?? 0))
@@ -511,6 +616,8 @@ async function proxy_url(url) {
 
                             console.log(`writing file ${fullpath}`)
 
+                            add_to_version_cache(body, version)
+
                             try { if (await is_read_only(fullpath)) await set_read_only(fullpath, false) } catch (e) { }
 
                             file_last_version = version
@@ -521,8 +628,7 @@ async function proxy_url(url) {
 
                             await require('fs').promises.writeFile(meta_path, JSON.stringify({
                                 version: file_last_version,
-                                digest: require('crypto').createHash('sha256')
-                                    .update(self.file_last_text).digest('base64')
+                                digest: sha256(self.file_last_text)
                             }))
                         }
 
@@ -532,6 +638,9 @@ async function proxy_url(url) {
                         }
 
                         self.file_last_stat = await require('fs').promises.stat(fullpath, { bigint: true })
+
+                        for (var cb of self.file_written_cbs) cb(self.file_last_stat)
+                        self.file_written_cbs = []
                     }
                 }
             })
@@ -568,7 +677,7 @@ async function proxy_url(url) {
                         console.log(`  editable = ${res.headers.get('editable')}`)
 
                         self.file_read_only = res.headers.get('editable') === 'false'
-                        signal_file_needs_writing()
+                        self.signal_file_needs_writing()
                     }
                 },
                 heartbeats: 120,
@@ -593,7 +702,7 @@ async function proxy_url(url) {
                     await braid_text.put(url, { ...update, peer, merge_type: 'dt' })
 
 
-                    signal_file_needs_writing()
+                    self.signal_file_needs_writing()
                     finish_something()
                 }, e => (e?.name !== "AbortError") && crash(e))
             }).catch(e => (e?.name !== "AbortError") && crash(e))
@@ -628,20 +737,23 @@ async function proxy_url(url) {
                     merge_type: 'dt',
                     peer,
                     subscribe: async (u) => {
-                        if (u.version.length) chain = chain.then(() => send_out({...u, peer}))
+                        if (u.version.length) {
+                            self.signal_file_needs_writing()
+                            chain = chain.then(() => send_out({...u, peer}))
+                        }
                     },
                 })
             } catch (e) {
                 if (e?.name !== "AbortError") crash(e)
             }
-            finish_something()            
+            finish_something()
         }
 
         // for config and errors file, listen for web changes
         if (!is_external_link) braid_text.get(url, braid_text_get_options = {
             merge_type: 'dt',
             peer,
-            subscribe: signal_file_needs_writing,
+            subscribe: self.signal_file_needs_writing,
         })
 
         return self
@@ -817,4 +929,8 @@ async function file_exists(fullpath) {
         let x = await require('fs').promises.stat(fullpath)
         return x.isFile()
     } catch (e) { }
+}
+
+function sha256(x) {
+    return require('crypto').createHash('sha256').update(x).digest('base64')
 }
