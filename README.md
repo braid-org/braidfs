@@ -37,7 +37,7 @@ edits propagate live to the web, and vice-versa.
 
 Here's a demo of VSCode editing [braid.org/braidfs](https://braid.org/braidfs):
 
-[braidfs-demo7.webm](https://github.com/user-attachments/assets/6245308c-8b46-458c-b645-0fc90c082d67)
+![](http://braid.org/files/braidfs-demo8.webp)
 
 After VSCode saves the file, braidfs immediately computes a diff of the edits
 and sends them as patches over Braid HTTP to https://braid.org/braidfs:
