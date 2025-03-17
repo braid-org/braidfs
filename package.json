@@ -1,6 +1,6 @@
 {
   "name": "braidfs",
-  "version": "0.0.58",
+  "version": "0.0.59",
   "description": "braid technology synchronizing files and webpages",
   "author": "Braid Working Group",
   "repository": "braid-org/braidfs",
