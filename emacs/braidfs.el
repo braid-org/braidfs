@@ -1,6 +1,7 @@
 (provide 'braidfs)
 
 (require 'benchmark)
+(require 'json)
 
 (defun find-executable (executable)
   (let* ((extra-paths (shell-command-to-string 
@@ -18,6 +19,31 @@
   "Location for bin/braidfs on your filesystem"
   :type 'string
   :group 'braidfs)
+
+(defvar braidfs-port nil
+  "Port number used by braidfs server, read from config file.")
+
+(defun braidfs-read-config-port ()
+  "Read the port number from the braidfs config file."
+  (let ((config-file (expand-file-name "~/http/.braidfs/config")))
+    (when (file-exists-p config-file)
+      (with-temp-buffer
+        (insert-file-contents config-file)
+        (let ((json-object-type 'hash-table)
+              (json-array-type 'list)
+              (json-key-type 'string))
+          (condition-case err
+              (let* ((config (json-read-from-string (buffer-string)))
+                     (port (gethash "port" config)))
+                (if port port 45678)) ; Default to 45678 if no port in config
+            (error
+             (message "Error parsing braidfs config: %s" err)
+             45678))))))) ; Default to 45678 on error
+
+(defun braidfs-get-port ()
+  "Get the port number for braidfs, initializing from config if needed."
+  (or braidfs-port
+      (setq braidfs-port (braidfs-read-config-port))))
 
 (defvar-local braidfs-last-saved-version nil
   "The version of the file before the user started editing the buffer, as a string.
@@ -45,8 +71,9 @@ When non-nil, indicates the buffer is being edited with braidfs.")
            (sha256-hash (sha256 input-string))
            (encoded-filename (url-hexify-string (expand-file-name filename)))
            (encoded-sha256 (url-hexify-string sha256-hash))
-           (url (format "http://localhost:45678/.braidfs/get_version/%s/%s"
-                        encoded-filename encoded-sha256))
+           (port (braidfs-get-port))
+           (url (format "http://localhost:%d/.braidfs/get_version/%s/%s"
+                        port encoded-filename encoded-sha256))
            (start-time (current-time)))
       ;; Synchronous HTTP request
       (with-current-buffer (url-retrieve-synchronously url)
@@ -157,6 +184,10 @@ When non-nil, indicates the buffer is being edited with braidfs.")
   "Installs braidfs hooks to do special things when writing braidfs files"
   (interactive)
 
+  ;; Initialize port from config file if not already set
+  (braidfs-get-port)
+  (message "braidfs initialized with port: %d" braidfs-port)
+
   ;; Add hooks
   (add-hook 'before-change-functions 'braidfs-before-change-function)
   (add-hook 'before-save-hook 'braidfs-before-save-hook)
@@ -181,7 +212,6 @@ When non-nil, indicates the buffer is being edited with braidfs.")
   (global-auto-revert-mode
    ;; It enables if we pass nil, and disables if we pass a negative number
    (if braidfs-previous-autorevert-value nil -1)))
-
 
 ;; Love news feed.  Love news feed.  Love news feed.
 ;; https://x.com/toomim/status/1901508275528487348
