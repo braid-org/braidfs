@@ -112,52 +112,51 @@ When non-nil, indicates the buffer is being edited with braidfs.")
 
 ;; Function to handle saving files through the normal mechanism
 (defun braidfs-write-file-hook ()
-  "Hook that runs when saving files. Use normal save mechanism but handle braidfs files specially."
+  "Hook that runs when saving files. Use HTTP to communicate with braidfs server."
   (when (braidfs-handling-save-p)
-        
-    ;; Call "braidfs edited" with the parent version and new content
-    (let* ((program "braidfs")
-           (args (list "edited"
-                       (expand-file-name (buffer-file-name))
-                       braidfs-last-saved-version))
-           (exit-code nil)
+    ;; Use HTTP to communicate with braidfs server
+    (let* ((filename (buffer-file-name))
            (buffer (current-buffer))
-           (output ""))
+           (content (with-current-buffer buffer
+                      (buffer-substring-no-properties (point-min) (point-max))))
+           (encoded-filename (url-hexify-string (expand-file-name filename)))
+           (encoded-version (url-hexify-string braidfs-last-saved-version))
+           (port (braidfs-get-port))
+           (url (format "http://localhost:%d/.braidfs/set_version/%s/%s"
+                       port encoded-filename encoded-version))
+           (url-request-method "POST")
+           (url-request-extra-headers '(("Content-Type" . "text/plain")))
+           (url-request-data content)
+           (start-time (current-time))
+           (success nil))
       
-      ;; Run the process and capture output
-      (with-temp-buffer
-        (message
-         "edited took %s"
-         (car
-          (benchmark-run
-              (progn
-                (insert-buffer-substring buffer)
-                (setq exit-code
-                      (apply 'call-process-region
-                             (point-min) (point-max)
-                             program
-                             t          ; delete region
-                             (list t nil) ; output to current buffer, no stderr
-                             nil          ; don't redisplay during output
-                             args))
-                (setq output (buffer-string)))))))
-        
-      (message "braidfs edited returned: %s (exit code: %d)"
-               (string-trim output)
-               exit-code) 
-
-      ;; If the command was successful then...
-      (when (= exit-code 0)
-
+      (message "Saving via braidfs HTTP API...")
+      (with-current-buffer (url-retrieve-synchronously url)
+        (condition-case err
+            (progn
+              (goto-char (point-min))
+              (when (re-search-forward "^HTTP/[0-9.]+ 2[0-9][0-9]" nil t)
+                (setq success t))
+              (re-search-forward "^$" nil t) ;; Skip HTTP headers
+              (let* ((response (buffer-substring (1+ (point)) (point-max)))
+                     (elapsed-time (float-time (time-subtract (current-time) start-time))))
+                (kill-buffer (current-buffer)) ;; Clean up the response buffer
+                (message "braidfs set_version (%.3f seconds): %s"
+                         elapsed-time (string-trim response))))
+          (error
+           (kill-buffer (current-buffer)) ;; Clean up even on error
+           (message "Error setting version at %s: %s" url err))))
+      
+      ;; If the request was successful
+      (when success
         ;; Reload the file
         (let ((inhibit-message t))
           (revert-buffer t t t))
-
+        
         ;; Reset braidfs tracking
         (setq braidfs-last-saved-version nil)
-      
-        ;; Return t to tell emacs that we handled saving the file, so that it
-        ;; doesn't try to save it again with the rest of (write-file).
+        
+        ;; Return t to tell emacs that we handled saving the file
         t))))
 
 ;; Reset the braidfs state when a file is opened
