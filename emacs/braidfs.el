@@ -70,7 +70,6 @@ When non-nil, indicates the buffer is being edited with braidfs.")
            (kill-buffer (current-buffer)) ;; Clean up even on error
            (message "Error fetching %s: %s" url err)))))))
 
-;; Placeholder SHA256 function (user must provide or install a library)
 (defun sha256 (string)
   "Compute SHA256 hash of STRING and return it as a base64-encoded string."
   (base64-encode-string 
