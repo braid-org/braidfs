@@ -34,55 +34,47 @@ When non-nil, indicates the buffer is being edited with braidfs.")
 
 ;; Function to run before changes occur
 (defun braidfs-before-change-function (begin end)
-  "Notice when the buffer is first modified"
+  "Notice when the buffer is first modified and fetch version via HTTP synchronously."
   (when (and (braidfs-file-in-http-dir-p)
              ;; Only run it the first time the buffer is modified
              (not braidfs-last-saved-version))
-    ;; (message "Starting edit on file in ~/http: %s" filename)
-
-    ;; Extract program and args from braidfs command
-    (let* ((program "braidfs")
-           (args (list "editing" (expand-file-name (buffer-file-name))))
-           (exit-code nil)
-           (output "")
+    (let* ((filename (buffer-file-name))
            (buffer (current-buffer))
-           (filename (buffer-file-name)))
-        
-      ;; (message "Calling %s with %s" program args)
+           (input-string (with-current-buffer buffer
+                           (buffer-substring-no-properties (point-min) (point-max))))
+           (sha256-hash (sha256 input-string))
+           (encoded-filename (url-hexify-string (expand-file-name filename)))
+           (encoded-sha256 (url-hexify-string sha256-hash))
+           (url (format "http://localhost:45678/.braidfs/get_version/%s/%s"
+                        encoded-filename encoded-sha256))
+           (start-time (current-time)))
+      ;; Synchronous HTTP request
+      (with-current-buffer (url-retrieve-synchronously url)
+        (condition-case err
+            (progn
+              (goto-char (point-min))
+              (re-search-forward "^$" nil t) ;; Skip HTTP headers
+              (let* ((response (buffer-substring (1+ (point)) (point-max)))
+                     (elapsed-time (float-time (time-subtract (current-time) start-time))))
+                (kill-buffer (current-buffer)) ;; Clean up the response buffer
+                (with-current-buffer buffer
+                  (setq braidfs-last-saved-version (string-trim response))
 
-      ;; Call braidfs editing and capture output
-      (with-temp-buffer
-        (insert-buffer-substring buffer)
+                  ;; Since braidfs is going to handle the save, we don't need to
+                  ;; warn the user that the file has been edited out from
+                  ;; underneath us.  So clear the modification time.
+                  (clear-visited-file-modtime))
+                (message "braidfs version (%.3f seconds): %s"
+                         elapsed-time (string-trim response))))
+          (error
+           (kill-buffer (current-buffer)) ;; Clean up even on error
+           (message "Error fetching %s: %s" url err)))))))
 
-        (message
-         "before-change process takes %s"
-         (car
-          (benchmark-run
-
-              (setq exit-code
-                    (apply 'call-process-region
-                           (point-min) (point-max)
-                           program
-                           t            ; delete region
-                           (list t nil) ; output to current buffer, no stderr
-                           nil          ; don't redisplay during output
-                           args))))) 
-        (setq output (buffer-string)))
-        
-      ;; Only store version if exit code is 0
-      (if (eq exit-code 0)
-          (progn
-            (setq braidfs-last-saved-version (string-trim output))
-
-            ;; Since braidfs is going to handle the save, we don't need to
-            ;; warn the user that the file has been edited out from
-            ;; underneath us.  So clear the modification time.
-            (clear-visited-file-modtime)              
-
-            ;; (message "braidfs editing returned: [%s]" braidfs-last-saved-version)
-            )
-        ;; (message "braidfs editing failed with code %d: %s" exit-code output)
-        ))))
+;; Placeholder SHA256 function (user must provide or install a library)
+(defun sha256 (string)
+  "Compute SHA256 hash of STRING and return it as a base64-encoded string."
+  (base64-encode-string 
+   (secure-hash 'sha256 string nil nil t)))
 
 (defun braidfs-handling-save-p ()
   (and (braidfs-file-in-http-dir-p)
