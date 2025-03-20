@@ -161,8 +161,7 @@ async function main() {
                 var proxy = await proxy_url.cache[normalize_url(path)]
 
                 var parents = JSON.parse(decodeURIComponent(m[2]))
-                var parent_text = (await braid_text.get(proxy.url,
-                    { parents })).body
+                var parent_text = proxy?.version_to_text_cache.get(JSON.stringify(parents)) ?? (await braid_text.get(proxy.url, { parents })).body
 
                 var text = await new Promise(done => {
                     const chunks = []
@@ -462,16 +461,26 @@ async function proxy_url(url) {
         // store a recent mapping of content-hashes to their versions,
         // to support the command line: braidfs editing filename < file
         self.hash_to_version_cache = new Map()
+        self.version_to_text_cache = new Map()
         function add_to_version_cache(text, version) {
+            if (self.hash_to_version_cache.size)
+                [...self.hash_to_version_cache.values()].pop().time = Date.now()
+
             var hash = sha256(text)
-            self.hash_to_version_cache.delete(hash)
-            self.hash_to_version_cache.set(hash, { version, time: Date.now() })
+            var value = self.hash_to_version_cache.get(hash)
+            if (value) {
+                self.hash_to_version_cache.delete(hash)
+                self.version_to_text_cache.delete(JSON.stringify(value.version))
+            }
+            self.hash_to_version_cache.set(hash, { version })
+            self.version_to_text_cache.set(JSON.stringify(version), text)
 
             var too_old = Date.now() - 30000
             for (var [key, value] of self.hash_to_version_cache) {
                 if (value.time > too_old ||
                     self.hash_to_version_cache.size <= 1) break
                 self.hash_to_version_cache.delete(key)
+                self.version_to_text_cache.delete(JSON.stringify(value.version))
             }
         }
 
