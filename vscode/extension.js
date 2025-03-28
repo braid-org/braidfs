@@ -47,15 +47,15 @@ function activate(context) {
                 })
 
                 // Mark as saved by reverting to the version saved by BraidFS
-                await vscode.commands.executeCommand("workbench.action.files.revert")
                 editingDocuments.delete(filePath)
                 updateStatusBar()
+                vscode.commands.executeCommand("workbench.action.files.revert")
             } catch (error) {
                 vscode.window.showErrorMessage(`BraidFS save error: ${error.message}`)
             }
         } else {
             // Not a BraidFS-managed file or no version found, use normal save
-            await vscode.commands.executeCommand("workbench.action.files.save")
+            vscode.commands.executeCommand("workbench.action.files.save")
         }
     })
     context.subscriptions.push(customSaveCommand)
@@ -83,6 +83,7 @@ function activate(context) {
                     }))
                 } else if (!document.isDirty && editingDocuments.has(filePath)) {
                     editingDocuments.delete(filePath)
+                    vscode.commands.executeCommand("workbench.action.files.revert")
                 }
                 updateStatusBar()
             }
