@@ -6,7 +6,7 @@ let statusBarItem
 let editingDocuments = new Map()
 
 function activate(context) {
-    braidfsPath = findExecutable("braidfs")
+    braidfsPath = execSync(`which braidfs`, { encoding: "utf8" }).trim()
 
     // Create status bar item
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100)
@@ -18,7 +18,7 @@ function activate(context) {
         const editor = vscode.window.activeTextEditor
         const document = editor?.document
         const filePath = document?.uri.fsPath
-        const ver = editingDocuments.get(filePath)
+        const ver = await editingDocuments.get(filePath)
 
         if (isInHttpDirectory(filePath) && ver) {
             // This is a BraidFS-managed file, handle save with BraidFS
@@ -68,7 +68,19 @@ function activate(context) {
 
             if (isInHttpDirectory(filePath)) {
                 if (document.isDirty && !editingDocuments.has(filePath)) {
-                    startBraidfsEditing(document)
+                    var text = document.getText()
+                    editingDocuments.set(filePath, new Promise(done => {
+                        var process = spawn(braidfsPath, ["editing", filePath],
+                            { stdio: ["pipe", "pipe", "pipe"] })
+                        let stdout = []
+                        process.stdout.on("data", x => stdout.push(x))
+                        process.on("close", () => {
+                            done(Buffer.concat(stdout).toString())
+                            updateStatusBar()
+                        })
+                        process.stdin.write(text)
+                        process.stdin.end()
+                    }))
                 } else if (!document.isDirty && editingDocuments.has(filePath)) {
                     editingDocuments.delete(filePath)
                 }
@@ -93,37 +105,15 @@ function activate(context) {
     )
 }
 
-function findExecutable(name) {
-    try {
-        return execSync(`which ${name}`, { encoding: "utf8" }).trim()
-    } catch (e) {
-        return null
-    }
-}
-
 function isInHttpDirectory(filePath) {
-    const httpDir = require("path").join(require("os").homedir(), "http")
+    var httpDir = require("path").join(require("os").homedir(), "http")
     return filePath && filePath.startsWith(httpDir) && !filePath.includes("#")
 }
 
-function startBraidfsEditing(document) {
-    const filePath = document.uri.fsPath
-    try {
-        const result = execSync(`${braidfsPath} editing "${filePath}"`, {
-            input: document.getText(),
-            encoding: "utf8",
-        }).trim()
-        editingDocuments.set(filePath, result)
-        updateStatusBar()
-    } catch (error) {
-        vscode.window.showErrorMessage(`BraidFS editing error: ${error.message}`)
-    }
-}
-
-function updateStatusBar() {
-    const path = vscode.window.activeTextEditor?.document.uri.fsPath
+async function updateStatusBar() {
+    var path = vscode.window.activeTextEditor?.document.uri.fsPath
     if (isInHttpDirectory(path)) {
-        const ver = editingDocuments.get(path)
+        var ver = await Promise.race([editingDocuments.get(path), 'waiting..'])
         if (ver) {
             statusBarItem.text = "$(edit) BraidFS Editing: " + ver
             statusBarItem.show()

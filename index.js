@@ -132,7 +132,7 @@ async function main() {
 
             if (req.url === '/favicon.ico') return
 
-            if (req.socket.remoteAddress !== '127.0.0.1' && req.socket.remoteAddress !== '::1') {
+            if (!['::ffff:127.0.0.1', '127.0.0.1', '::1'].includes(req.socket.remoteAddress)) {
                 res.writeHead(403, { 'Content-Type': 'text/plain' })
                 return res.end('Access denied: only accessible from localhost')
             }
