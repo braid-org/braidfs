@@ -53,11 +53,6 @@ Can be:
            (args (list "editing" (expand-file-name (buffer-file-name))))
            (process-buffer (generate-new-buffer " *braidfs-edit*")))
       
-      ;; Since braidfs is going to handle the save, we don't need to
-      ;; warn the user that the file has been edited out from
-      ;; underneath us.  So clear the modification time.
-      (clear-visited-file-modtime)
-
       ;; Start the async process
       (setq braidfs-editor-process
             (make-process
@@ -191,16 +186,22 @@ Can be:
     (let ((inhibit-message t))
       (revert-buffer t t t))))
 
+(defun braidfs-around-save-buffer-advice (original-fun &rest args)
+  "Advice to clear file modification time before saving if using braidfs."
+  (if braidfs-last-saved-version (clear-visited-file-modtime))
+  (apply original-fun args))
+
 (defvar braidfs-previous-autorevert-value nil)
 (defun braidfs-enable-collab ()
   "Enables conflict-free collaborative editing in emacs over braidfs."
   (interactive)
 
-  ;; Add hooks
+  ;; Add hooks and advice
   (add-hook 'before-change-functions 'braidfs-before-change-function)
   (add-hook 'find-file-hook 'braidfs-reset-state)
   (add-hook 'write-file-functions 'braidfs-write-file-hook)
   (add-hook 'post-command-hook 'braidfs-post-command-hook)
+  (advice-add 'save-buffer :around #'braidfs-around-save-buffer-advice)
 
   (setq braidfs-previous-autorevert-value global-auto-revert-mode)
   (global-auto-revert-mode 1))
@@ -209,11 +210,12 @@ Can be:
   "Disables conflict-free collaborative editing in emacs over braidfs."
   (interactive)
 
-  ;; Remove hooks
+  ;; Remove hooks and advice
   (remove-hook 'before-change-functions 'braidfs-before-change-function)
   (remove-hook 'find-file-hook 'braidfs-reset-state)
   (remove-hook 'write-file-functions 'braidfs-write-file-hook)
   (remove-hook 'post-command-hook 'braidfs-post-command-hook)
+  (advice-remove 'save-buffer #'braidfs-around-save-buffer-advice)
 
   (global-auto-revert-mode
    ;; It enables if we pass nil, and disables if we pass a negative number
