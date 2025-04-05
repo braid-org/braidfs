@@ -90,32 +90,40 @@ console.log(`braidfs version: ${require(`${__dirname}/package.json`).version}`)
 if (argv.length === 1 && argv[0].match(/^(run|serve)$/)) {
     return main()
 } else if (argv.length && argv.length % 2 == 0 && argv.every((x, i) => i % 2 != 0 || x.match(/^(sync|unsync)$/))) {
-    let operations = []
-    for (let i = 0; i < argv.length; i += 2) {
-        var operation = argv[i],
-            url = argv[i + 1]
-        if (!url.match(/^https?:\/\//)) {
-            if (url.startsWith('/')) url = require('path').relative(proxy_base, url)
-            url = `https://${url}`
-        }
-        console.log(`${operation}ing ${url}`)
-        operations.push({ operation, url })
-    }
-    return Promise.all(operations.map(({ operation, url }) =>
-        braid_fetch(`http://localhost:${config.port}/.braidfs/config`, {
-            method: 'PUT',
-            patches: [{
-                unit: 'json',
-                range: `sync[${JSON.stringify(url)}]`,
-                content: operation === 'sync' ? 'true' : ''
-            }]
-        }).then(() => console.log(`${operation}ed: ${url}`))
-    )).then(() => console.log('All operations completed successfully.'))
-        .catch(() => {
-            return console.log(`The braidfs daemon does not appear to be running.
+    return (async () => {
+        for (let i = 0; i < argv.length; i += 2) {
+            var operation = argv[i],
+                url = argv[i + 1]
+            if (!url.match(/^https?:\/\//)) {
+                if (url.startsWith('/')) url = require('path').relative(proxy_base, url)
+                url = `https://${url}`
+            }
+            console.log(`${operation}ing ${url}`)
+            try {
+                var res = await braid_fetch(`http://localhost:${config.port}/.braidfs/config`, {
+                    method: 'PUT',
+                    patches: [{
+                        unit: 'json',
+                        range: `sync[${JSON.stringify(url)}]`,
+                        content: operation === 'sync' ? 'true' : ''
+                    }]
+                })
+                if (res.ok) {
+                    console.log(`${operation}ed: ${url}`)
+                } else {
+                    console.log(`failed to ${operation} ${url}`)
+                    console.log(`server responded with ${res.status}: ${await res.text()}`)
+                    return
+                }
+            } catch (e) {
+                console.log(`The braidfs daemon does not appear to be running.
 You can run it with:
     braidfs run${to_run_in_background}`)
-        })
+                return
+            }
+        }
+        console.log('All operations completed successfully.')
+    })()
 } else {
     return console.log(`Usage:
     braidfs run
