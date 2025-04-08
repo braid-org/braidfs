@@ -53,38 +53,6 @@ To run daemon in background:
     launchctl submit -l org.braid.braidfs -- braidfs run` : ''
 let argv = process.argv.slice(2)
 
-if (argv[0] === 'editing') {
-    return (async () => {
-        var filename = argv[1]
-        if (!require('path').isAbsolute(filename))
-            filename = require('path').resolve(process.cwd(), filename)
-        var input_string = await new Promise(done => {
-            const chunks = []
-            process.stdin.on('data', chunk => chunks.push(chunk))
-            process.stdin.on('end', () => done(Buffer.concat(chunks).toString()))
-        })
-
-        var r = await fetch(`http://localhost:${config.port}/.braidfs/get_version/${encodeURIComponent(filename)}/${encodeURIComponent(sha256(input_string))}`)
-        if (!r.ok) throw new Error(`bad status: ${r.status}`)
-        console.log(await r.text())
-    })()
-} else if (argv[0] === 'edited') {
-    return (async () => {
-        var filename = argv[1]
-        if (!require('path').isAbsolute(filename))
-            filename = require('path').resolve(process.cwd(), filename)
-        var parent_version = argv[2]
-        var input_string = await new Promise(done => {
-            const chunks = []
-            process.stdin.on('data', chunk => chunks.push(chunk))
-            process.stdin.on('end', () => done(Buffer.concat(chunks).toString()))
-        })
-        var r = await fetch(`http://localhost:${config.port}/.braidfs/set_version/${encodeURIComponent(filename)}/${encodeURIComponent(parent_version)}`, { method: 'PUT', body: input_string })
-        if (!r.ok) throw new Error(`bad status: ${r.status}`)
-        console.log(await r.text())
-    })()
-}
-
 console.log(`braidfs version: ${require(`${__dirname}/package.json`).version}`)
 
 if (argv.length === 1 && argv[0].match(/^(run|serve)$/)) {
@@ -159,7 +127,8 @@ async function main() {
                 var path = require('path').relative(proxy_base, fullpath)
                 var proxy = await proxy_url.cache[normalize_url(path)]
                 var version = proxy?.hash_to_version_cache.get(hash)?.version
-                return res.end(JSON.stringify(version ?? null))
+                if (!version) res.statusCode = 404
+                return res.end(JSON.stringify(version))
             }
 
             var m = url.match(/^\.braidfs\/set_version\/([^\/]*)\/([^\/]*)/)

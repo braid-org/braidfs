@@ -58,9 +58,10 @@ if [ "$1" = "editing" ]; then
     HASH=$(calculate_sha256)
     
     # Make HTTP request
-    RESPONSE=$(curl -s "http://localhost:${PORT}/.braidfs/get_version/$(urlencode "$FILENAME")/$(urlencode "$HASH")")
+    RESPONSE=$(curl -s -f "http://localhost:${PORT}/.braidfs/get_version/$(urlencode "$FILENAME")/$(urlencode "$HASH")")
+    CURL_EXIT_CODE=$?
     echo "$RESPONSE"
-    exit 0
+    exit $CURL_EXIT_CODE
 
 # Check if the first argument is "edited"
 elif [ "$1" = "edited" ]; then

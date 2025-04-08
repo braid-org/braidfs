@@ -1,26 +1,25 @@
 const vscode = require("vscode")
 const { execSync, spawn } = require("child_process")
 
+let editingDocuments
 let braidfsPath
 let statusBarItem
-let editingDocuments = new Map()
 
 function activate(context) {
+    editingDocuments = new Map()
     braidfsPath = execSync(`which braidfs`, { encoding: "utf8" }).trim()
 
     // Create status bar item
-    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100)
-    context.subscriptions.push(statusBarItem)
-    updateStatusBar()
+    context.subscriptions.push(statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100))
 
     // Register custom save command
-    const customSaveCommand = vscode.commands.registerCommand("myExtension.customSave", async () => {
+    context.subscriptions.push(vscode.commands.registerCommand("myExtension.customSave", async () => {
         const editor = vscode.window.activeTextEditor
         const document = editor?.document
         const filePath = document?.uri.fsPath
         const ver = await editingDocuments.get(filePath)
 
-        if (isInHttpDirectory(filePath) && ver) {
+        if (typeof ver === 'string') {
             // This is a BraidFS-managed file, handle save with BraidFS
             try {
                 await new Promise((resolve, reject) => {
@@ -57,8 +56,7 @@ function activate(context) {
             // Not a BraidFS-managed file or no version found, use normal save
             vscode.commands.executeCommand("workbench.action.files.save")
         }
-    })
-    context.subscriptions.push(customSaveCommand)
+    }))
 
     // Track document changes to detect when editing starts/stops
     context.subscriptions.push(
@@ -74,8 +72,8 @@ function activate(context) {
                             { stdio: ["pipe", "pipe", "pipe"] })
                         let stdout = []
                         process.stdout.on("data", x => stdout.push(x))
-                        process.on("close", () => {
-                            done(Buffer.concat(stdout).toString())
+                        process.on("close", exit_code => {
+                            done(exit_code === 0 ? Buffer.concat(stdout).toString() : null)
                             updateStatusBar()
                         })
                         process.stdin.write(text)
@@ -104,6 +102,13 @@ function activate(context) {
             updateStatusBar()
         })
     )
+
+    // Documents may already be open and edited before the extension loads,
+    // so let's put a warning for those..
+    for (var doc of vscode.workspace.textDocuments)
+        if (isInHttpDirectory(doc.uri.fsPath) && doc.isDirty)
+            editingDocuments.set(doc.uri.fsPath, null)
+    updateStatusBar()
 }
 
 function isInHttpDirectory(filePath) {
@@ -115,8 +120,10 @@ async function updateStatusBar() {
     var path = vscode.window.activeTextEditor?.document.uri.fsPath
     if (isInHttpDirectory(path)) {
         var ver = await Promise.race([editingDocuments.get(path), 'waiting..'])
-        if (ver) {
-            statusBarItem.text = "$(edit) BraidFS Editing: " + ver
+        if (ver !== undefined) {
+            statusBarItem.text = typeof ver === 'string' ?
+                "$(edit) BraidFS Editing: " + ver :
+                "$(edit) BraidFS not syncing!"
             statusBarItem.show()
             return
         }

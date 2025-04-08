@@ -23,8 +23,12 @@
   "The version status of the file being edited with braidfs.
 Can be:
 - nil: Not tracking with braidfs
-- symbol: Process started but waiting for completion
+- symbol: Process started but waiting for completion, or in error state
 - string: The version of the file before editing")
+
+(defun braidfs-editing-p ()
+  (and braidfs-last-saved-version
+    (not (eq braidfs-last-saved-version 'error))))
 
 (defvar-local braidfs-editor-process nil
   "Short-lived process for the async braidfs editing commands.")
@@ -70,7 +74,9 @@ Can be:
                                (with-current-buffer target-buffer
                                  ;; Only update if this is still the active process
                                  (when (eq proc braidfs-editor-process)
-                                   (setq braidfs-last-saved-version (if (= exit-code 0) output 'error))))))
+                                   (setq braidfs-last-saved-version (if (= exit-code 0) output (progn
+                                     (message "braidfs is not handling this file because of an error.")
+                                     'error)))))))
                            ;; Clean up the process buffer
                            (kill-buffer (process-buffer proc))))))
       
@@ -82,14 +88,10 @@ Can be:
       (process-send-string braidfs-editor-process (buffer-string))
       (process-send-eof braidfs-editor-process))))
 
-(defun braidfs-handling-save-p ()
-  (and (braidfs-file-in-http-dir-p)
-       braidfs-last-saved-version))
-
 ;; Function to handle saving files through the normal mechanism
 (defun braidfs-write-file-hook ()
   "Hook that runs when saving files. Use normal save mechanism but handle braidfs files specially."
-  (if (not (braidfs-handling-save-p))
+  (if (not (braidfs-editing-p))
       nil  ; Not handling this file, return nil to allow normal processing
     
     ;; Handle waiting for async process
@@ -175,8 +177,7 @@ Can be:
 
 (defun braidfs-post-command-hook ()
   "Check if we did undo back to an unmodified buffer.  If so, check for reload."
-  (when (and (braidfs-file-in-http-dir-p)
-             braidfs-last-saved-version    ;; Buffer is being edited with braidfs
+  (when (and (braidfs-editing-p)           ;; Buffer is being edited with braidfs
              (not (buffer-modified-p))     ;; Buffer is no longer modified
              (eq this-command 'undo))      ;; Last command was undo
 
@@ -188,7 +189,7 @@ Can be:
 
 (defun braidfs-around-save-buffer-advice (original-fun &rest args)
   "Advice to clear file modification time before saving if using braidfs."
-  (if braidfs-last-saved-version (clear-visited-file-modtime))
+  (if (braidfs-editing-p) (clear-visited-file-modtime))
   (apply original-fun args))
 
 (defvar braidfs-previous-autorevert-value nil)
