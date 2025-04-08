@@ -659,6 +659,10 @@ async function proxy_url(url) {
                 subscribe: true,
                 retry: {
                     onRes: (res) => {
+                        if (res.status !== 209) return console.log(
+                            `FAILED TO CONNECT TO: ${url}\n` +
+                            `GOT STATUS CODE: ${res.status}, expected 209.`)
+
                         console.log(`connected to ${url}`)
                         console.log(`  editable = ${res.headers.get('editable')}`)
 
@@ -673,7 +677,7 @@ async function proxy_url(url) {
                 },
                 peer
             }).then(x => {
-                x.subscribe(async update => {
+                if (x.status === 209) x.subscribe(async update => {
                     console.log(`got external update about ${url}`)
 
                     if (update.body) update.body = update.body_text
