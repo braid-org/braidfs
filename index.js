@@ -721,7 +721,7 @@ async function proxy_url(url) {
                     return
                 }
 
-                var chain = Promise.resolve()
+                var in_parallel = create_parallel_promises(10)
                 braid_text.get(url, braid_text_get_options = {
                     parents: r.headers.get('version') && JSON.parse(`[${r.headers.get('version')}]`),
                     merge_type: 'dt',
@@ -729,7 +729,7 @@ async function proxy_url(url) {
                     subscribe: async (u) => {
                         if (u.version.length) {
                             self.signal_file_needs_writing()
-                            chain = chain.then(() => send_out({...u, peer}))
+                            in_parallel(() => send_out({...u, peer}))
                         }
                     },
                 })
@@ -923,4 +923,15 @@ async function file_exists(fullpath) {
 
 function sha256(x) {
     return require('crypto').createHash('sha256').update(x).digest('base64')
+}
+
+function create_parallel_promises(N) {
+    var q = []
+    var n = 0
+    return async f => {
+        q.push(f)
+        n++
+        while (q.length && n <= N) await q.shift()()
+        n--
+    }
 }
