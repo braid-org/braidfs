@@ -17,20 +17,21 @@ var config = null,
 
 if (require('fs').existsSync(proxy_base)) {
     try {
-        config = JSON.parse(require('fs').readFileSync(braidfs_config_file, 'utf8'))
+        config = require('fs').readFileSync(braidfs_config_file, 'utf8')
+    } catch (e) { return console.log(`could not find config file: ${braidfs_config_file}`) }
+    try {
+        config = JSON.parse(config)
+    } catch (e) { return console.log(`could not parse config file: ${braidfs_config_file}`) }
 
-        // for 0.0.55 users upgrading to 0.0.56,
-        // which changes the config "domains" key to "cookies",
-        // and condenses its structure a bit
-        if (config.domains) {
-            config.cookies = Object.fromEntries(Object.entries(config.domains).map(([k, v]) => {
-                if (v.auth_headers?.Cookie) return [k, v.auth_headers.Cookie]
-            }).filter(x => x))
-            delete config.domains
-            require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
-        }
-    } catch (e) {
-        return console.log(`Cannot parse the configuration file at: ${braidfs_config_file}`)
+    // for 0.0.55 users upgrading to 0.0.56,
+    // which changes the config "domains" key to "cookies",
+    // and condenses its structure a bit
+    if (config.domains) {
+        config.cookies = Object.fromEntries(Object.entries(config.domains).map(([k, v]) => {
+            if (v.auth_headers?.Cookie) return [k, v.auth_headers.Cookie]
+        }).filter(x => x))
+        delete config.domains
+        require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
     }
 } else {
     config = {
@@ -474,11 +475,11 @@ async function proxy_url(url) {
         }
 
         async function send_out(stuff) {
-            console.log(`send_out ${url} ${JSON.stringify(stuff, null, 4).slice(0, 1000)}`)
-
             if (!start_something()) return
             if (is_external_link) {
                 try {
+                    console.log(`send_out ${url} ${JSON.stringify(stuff, null, 4).slice(0, 1000)}`)
+
                     let a = new AbortController()
                     aborts.add(a)
                     await braid_fetch(url, {
@@ -494,7 +495,7 @@ async function proxy_url(url) {
                     })
                     aborts.delete(a)
                 } catch (e) {
-                    if (e?.name !== "AbortError") crash(e)
+                    if (e?.name !== "AbortError") console.log(e)
                 }
             }
             finish_something()
@@ -515,9 +516,25 @@ async function proxy_url(url) {
                         () => 1, () => 0)) {
                         // meta file exists
                         let meta = JSON.parse(await require('fs').promises.readFile(meta_path, { encoding: 'utf8' }))
-                        let _ = ({ version: file_last_version, digest: file_last_digest } = Array.isArray(meta) ? { version: meta } : meta)
+                        void ({ version: file_last_version, digest: file_last_digest } = Array.isArray(meta) ? { version: meta } : meta)
 
-                        self.file_last_text = (await braid_text.get(url, { version: file_last_version })).body
+                        try {
+                            self.file_last_text = (await braid_text.get(url, { version: file_last_version })).body
+                        } catch (e) {
+                            // the version from the meta file doesn't exist..
+                            if (fullpath === braidfs_config_file) {
+                                // in the case of the config file,
+                                // we want to load the current file contents,
+                                // which we can acheive by setting file_last_version
+                                // to the latest
+                                console.log(`WARNING: there was an issue with the config file, and it is reverting to the contents at: ${braidfs_config_file}`)
+                                var x = await braid_text.get(url, {})
+                                file_last_version = x.version
+                                self.file_last_text = x.body
+                                file_last_digest = sha256(self.file_last_text)
+                            } else throw new Error(`sync error: version not found: ${file_last_version}`)
+                        }
+
                         file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
 
                         // sanity check
@@ -694,8 +711,8 @@ async function proxy_url(url) {
 
                     self.signal_file_needs_writing()
                     finish_something()
-                }, e => (e?.name !== "AbortError") && crash(e))
-            }).catch(e => (e?.name !== "AbortError") && crash(e))
+                }, e => (e?.name !== "AbortError") && console.log(e))
+            }).catch(e => (e?.name !== "AbortError") && console.log(e))
         }
 
         // send them stuff we have but they don't
@@ -703,7 +720,7 @@ async function proxy_url(url) {
         async function send_new_stuff() {
             if (!start_something()) return
             try {
-                let a = new AbortController()
+                var a = new AbortController()
                 aborts.add(a)
                 var r = await braid_fetch(url, {
                     signal: a.signal,
@@ -721,9 +738,63 @@ async function proxy_url(url) {
                     return
                 }
 
+                if (r.headers.get('version') == null)
+                    return console.log(`GOT NO VERSION FROM: ${url}`)
+                var parents = JSON.parse(`[${r.headers.get('version')}]`)                
+
+                var bytes = (await braid_text.get_resource(url)).doc.toBytes()
+                var [_, versions, __] = braid_text.dt_parse([...bytes])
+                var agents = {}
+                for (var v of versions) agents[v[0]] = v[1]
+
+                function we_have_it(version) {
+                    var m = version.match(/^(.*)-(\d+)$/s)
+                    var agent = m[1]
+                    var seq = 1 * m[2]
+                    return (agents[agent] ?? -1) >= seq
+                }
+
+                if (parents.length && !parents.some(we_have_it)) {
+                    var min = 0
+                    var max = versions.length
+                    var last_good_parents = []
+                    while (min < max) {
+                        var i = Math.ceil((min + max)/2)
+                        parents = i ? [versions[i - 1].join('-')] : []
+
+                        console.log(`min=${min}, max=${max}, i=${i}, parents=${parents}`)
+
+                        var a = new AbortController()
+                        aborts.add(a)
+                        var st = Date.now()
+                        var r = await braid_fetch(url, {
+                            signal: a.signal,
+                            method: "HEAD",
+                            parents,
+                            headers: {
+                                Accept: 'text/plain',
+                                ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname]),
+                            },
+                            retry: true
+                        })
+                        console.log(`fetched in ${Date.now() - st}`)
+                        aborts.delete(a)
+
+                        if (r.ok) {
+                            min = i
+                            last_good_parents = parents
+                        } else {
+                            max = i - 1
+                        }
+                    }
+                    parents = last_good_parents
+
+                    console.log(`found good parents: ${parents}: ${url}`)
+                }
+
                 var in_parallel = create_parallel_promises(10)
                 braid_text.get(url, braid_text_get_options = {
-                    parents: r.headers.get('version') && JSON.parse(`[${r.headers.get('version')}]`),
+                    parents,
                     merge_type: 'dt',
                     peer,
                     subscribe: async (u) => {
@@ -734,7 +805,7 @@ async function proxy_url(url) {
                     },
                 })
             } catch (e) {
-                if (e?.name !== "AbortError") crash(e)
+                if (e?.name !== "AbortError") console.log(e)
             }
             finish_something()
         }
@@ -890,11 +961,6 @@ async function set_read_only(fullpath, read_only) {
         else mode |= 0o200
         await require('fs').promises.chmod(fullpath, mode)
     }
-}
-
-function crash(e) {
-    console.error('CRASHING: ' + e + ' ' + e.stack)
-    process.exit(1)
 }
 
 async function get_file_lock(fullpath) {
