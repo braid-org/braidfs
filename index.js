@@ -61,24 +61,24 @@ if (argv.length === 1 && argv[0].match(/^(run|serve)$/)) {
 } else if (argv.length && argv.length % 2 == 0 && argv.every((x, i) => i % 2 != 0 || x.match(/^(sync|unsync)$/))) {
     return (async () => {
         for (let i = 0; i < argv.length; i += 2) {
-            var operation = argv[i],
+            var sync = argv[i] === 'sync',
                 url = argv[i + 1]
             if (!url.match(/^https?:\/\//)) {
                 if (url.startsWith('/')) url = require('path').relative(proxy_base, url)
                 url = `https://${url}`
             }
-            console.log(`${operation}ing ${url}`)
+            console.log(`${sync ? '' : 'un'}subscribing ${sync ? 'to' : 'from'} ${url}`)
             try {
                 var res = await braid_fetch(`http://localhost:${config.port}/.braidfs/config`, {
                     method: 'PUT',
                     patches: [{
                         unit: 'json',
                         range: `sync[${JSON.stringify(url)}]`,
-                        content: operation === 'sync' ? 'true' : ''
+                        content: sync ? 'true' : ''
                     }]
                 })
                 if (res.ok) {
-                    console.log(`${operation}ed: ${url}`)
+                    console.log(`Now ${sync ? '' : 'un'}subscribed ${sync ? 'to' : 'from'} ${url} in ~/http/.braidfs/config`)
                 } else {
                     console.log(`failed to ${operation} ${url}`)
                     console.log(`server responded with ${res.status}: ${await res.text()}`)
@@ -91,7 +91,6 @@ You can run it with:
                 return
             }
         }
-        console.log('All operations completed successfully.')
     })()
 } else {
     return console.log(`Usage:
