@@ -263,6 +263,10 @@ async function trash_file(fullpath, path) {
     await require('fs').promises.rename(fullpath, dest)
 
     // and log an error
+    await log_error(`error: unsynced file ${fullpath}; moved to ${dest}`)
+}
+
+async function log_error(text) {
     var x = await braid_text.get('.braidfs/errors', {}),
         len = [...x.body].length
     await braid_text.put('.braidfs/errors', {
@@ -270,7 +274,7 @@ async function trash_file(fullpath, path) {
         patches: [{
             unit: 'text',
             range: `[${len}:${len}]`,
-            content: `error: unsynced file ${fullpath}; moved to ${dest}\n`
+            content: `${text}\n`
         }]
     })
 }
@@ -676,9 +680,12 @@ async function proxy_url(url) {
                 subscribe: true,
                 retry: {
                     onRes: (res) => {
-                        if (res.status !== 209) return console.log(
-                            `FAILED TO CONNECT TO: ${url}\n` +
-                            `GOT STATUS CODE: ${res.status}, expected 209.`)
+                        if (res.status !== 209) {
+                            log_error(`Can't sync ${url} -- got bad response ${res.status} from server (expected 209)`)
+                            return console.log(
+                                `FAILED TO CONNECT TO: ${url}\n` +
+                                `GOT STATUS CODE: ${res.status}, expected 209.`)
+                        }
 
                         console.log(`connected to ${url}`)
                         console.log(`  editable = ${res.headers.get('editable')}`)
@@ -738,8 +745,10 @@ async function proxy_url(url) {
                     return
                 }
 
-                if (r.headers.get('version') == null)
+                if (r.headers.get('version') == null) {
+                    log_error(`Can't sync ${url} -- got no version from server`)
                     return console.log(`GOT NO VERSION FROM: ${url}`)
+                }
                 var parents = JSON.parse(`[${r.headers.get('version')}]`)                
 
                 var bytes = (await braid_text.get_resource(url)).doc.toBytes()
