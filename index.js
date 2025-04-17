@@ -489,7 +489,7 @@ async function proxy_url(url) {
                         signal: a.signal,
                         headers: {
                             "Merge-Type": "dt",
-                            "Content-Type": 'text/plain',
+                            "Content-Type": '*/*',
                             ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
                         },
                         method: "PUT",
@@ -673,7 +673,7 @@ async function proxy_url(url) {
                 signal: a.signal,
                 headers: {
                     "Merge-Type": "dt",
-                    Accept: 'text/plain',
+                    Accept: '*/*',
                     ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname]),
                 },
                 subscribe: true,
@@ -732,7 +732,7 @@ async function proxy_url(url) {
                     signal: a.signal,
                     method: "HEAD",
                     headers: {
-                        Accept: 'text/plain',
+                        Accept: '*/*',
                         ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname]),
                     },
                     retry: true
@@ -780,7 +780,7 @@ async function proxy_url(url) {
                             method: "HEAD",
                             parents,
                             headers: {
-                                Accept: 'text/plain',
+                                Accept: '*/*',
                                 ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname]),
                             },
                             retry: true
