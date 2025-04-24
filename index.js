@@ -149,10 +149,9 @@ async function main() {
                 var patches = diff(parent_text, text)
 
                 if (patches.length) {
-                    var peer = Math.random().toString(36).slice(2)
-                    var char_count = patches_to_code_points(patches, parent_text)
-                    var version = [peer + "-" + char_count]
-                    await braid_text.put(proxy.url, { version, parents, patches, peer, merge_type: 'dt' })
+                    proxy.local_edit_counter += patches_to_code_points(patches, parent_text)
+                    var version = [proxy.peer + "-" + (proxy.local_edit_counter - 1)]
+                    await braid_text.put(proxy.url, { version, parents, patches, merge_type: 'dt' })
 
                     // may be able to do this more efficiently.. we want to make sure we're capturing a file write that is after our version was written.. there may be a way we can avoid calling file_needs_writing here
                     var stat = await new Promise(done => {
@@ -181,7 +180,6 @@ async function main() {
         if (!config.allow_remote_access) console.log('!! only accessible from localhost !!')
 
         proxy_url('.braidfs/config').then(() => {
-            let peer = Math.random().toString(36).slice(2)
             braid_text.get('.braidfs/config', {
                 subscribe: async update => {
                     let prev = config
@@ -218,8 +216,7 @@ async function main() {
                         if (x !== '') console.log(`warning: config file is currently invalid.`)
                         return
                     }
-                },
-                peer
+                }
             })
         })
         proxy_url('.braidfs/errors')
@@ -427,9 +424,9 @@ async function proxy_url(url) {
             return p
         }
 
-        var peer = Math.random().toString(36).slice(2),
-            char_counter = -1,
-            file_last_version = null,
+        self.peer = Math.random().toString(36).slice(2)
+        self.local_edit_counter = 0
+        var file_last_version = null,
             file_last_digest = null
         self.file_last_text = null
         self.file_last_stat = null
@@ -504,6 +501,53 @@ async function proxy_url(url) {
             finish_something()
         }
 
+        if (!start_something()) return
+        await within_file_lock(fullpath, async () => {
+            var fullpath = await get_fullpath()
+            if (await require('fs').promises.access(meta_path).then(
+                () => 1, () => 0)) {
+                // meta file exists
+                let meta = JSON.parse(await require('fs').promises.readFile(meta_path, { encoding: 'utf8' }))
+                // destructure stuff from the meta file
+                !({
+                    version: file_last_version,
+                    digest: file_last_digest,
+                    peer: self.peer,
+                    local_edit_counter: self.local_edit_counter
+                } = Array.isArray(meta) ? { version: meta } : meta)
+
+                if (!self.peer) self.peer = Math.random().toString(36).slice(2)
+                if (!self.local_edit_counter) self.local_edit_counter = 0
+
+                try {
+                    self.file_last_text = (await braid_text.get(url, { version: file_last_version })).body
+                } catch (e) {
+                    // the version from the meta file doesn't exist..
+                    if (fullpath === braidfs_config_file) {
+                        // in the case of the config file,
+                        // we want to load the current file contents,
+                        // which we can acheive by setting file_last_version
+                        // to the latest
+                        console.log(`WARNING: there was an issue with the config file, and it is reverting to the contents at: ${braidfs_config_file}`)
+                        var x = await braid_text.get(url, {})
+                        file_last_version = x.version
+                        self.file_last_text = x.body
+                        file_last_digest = sha256(self.file_last_text)
+                    } else throw new Error(`sync error: version not found: ${file_last_version}`)
+                }
+
+                file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
+
+                // sanity check
+                if (file_last_digest && sha256(self.file_last_text) != file_last_digest) throw new Error('file_last_text does not match file_last_digest')
+            } else if (await require('fs').promises.access(fullpath).then(() => 1, () => 0)) {
+                // file exists, but not meta file
+                file_last_version = []
+                self.file_last_text = ''
+            }
+        })
+        finish_something()
+
         file_loop_pump()
         async function file_loop_pump() {
             if (file_loop_pump_lock) return
@@ -513,41 +557,6 @@ async function proxy_url(url) {
 
             await within_file_lock(fullpath, async () => {
                 var fullpath = await get_fullpath()
-
-                if (file_last_version === null) {
-                    if (await require('fs').promises.access(meta_path).then(
-                        () => 1, () => 0)) {
-                        // meta file exists
-                        let meta = JSON.parse(await require('fs').promises.readFile(meta_path, { encoding: 'utf8' }))
-                        void ({ version: file_last_version, digest: file_last_digest } = Array.isArray(meta) ? { version: meta } : meta)
-
-                        try {
-                            self.file_last_text = (await braid_text.get(url, { version: file_last_version })).body
-                        } catch (e) {
-                            // the version from the meta file doesn't exist..
-                            if (fullpath === braidfs_config_file) {
-                                // in the case of the config file,
-                                // we want to load the current file contents,
-                                // which we can acheive by setting file_last_version
-                                // to the latest
-                                console.log(`WARNING: there was an issue with the config file, and it is reverting to the contents at: ${braidfs_config_file}`)
-                                var x = await braid_text.get(url, {})
-                                file_last_version = x.version
-                                self.file_last_text = x.body
-                                file_last_digest = sha256(self.file_last_text)
-                            } else throw new Error(`sync error: version not found: ${file_last_version}`)
-                        }
-
-                        file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
-
-                        // sanity check
-                        if (file_last_digest && sha256(self.file_last_text) != file_last_digest) throw new Error('file_last_text does not match file_last_digest')
-                    } else if (await require('fs').promises.access(fullpath).then(() => 1, () => 0)) {
-                        // file exists, but not meta file
-                        file_last_version = []
-                        self.file_last_text = ''
-                    }
-                }
 
                 while (file_needs_reading || file_needs_writing) {
                     if (file_needs_reading) {
@@ -578,21 +587,26 @@ async function proxy_url(url) {
                             console.log(`found changes in: ${fullpath}`)
 
                             // convert from js-indicies to code-points
-                            char_counter += patches_to_code_points(patches, self.file_last_text)
+                            self.local_edit_counter += patches_to_code_points(patches, self.file_last_text)
 
                             self.file_last_text = text
 
-                            var version = [peer + "-" + char_counter]
+                            var version = [self.peer + "-" + (self.local_edit_counter - 1)]
                             var parents = file_last_version
                             file_last_version = version
 
                             add_to_version_cache(text, version)
 
-                            send_out({ version, parents, patches, peer })
+                            send_out({ version, parents, patches, peer: self.peer })
 
-                            await braid_text.put(url, { version, parents, patches, peer, merge_type: 'dt' })
+                            await braid_text.put(url, { version, parents, patches, peer: self.peer, merge_type: 'dt' })
 
-                            await require('fs').promises.writeFile(meta_path, JSON.stringify({ version: file_last_version, digest: sha256(self.file_last_text) }))
+                            await require('fs').promises.writeFile(meta_path, JSON.stringify({
+                                version: file_last_version,
+                                digest: sha256(self.file_last_text),
+                                peer: self.peer,
+                                local_edit_counter: self.local_edit_counter
+                            }))
                         } else {
                             add_to_version_cache(text, file_last_version)
 
@@ -634,7 +648,9 @@ async function proxy_url(url) {
 
                             await require('fs').promises.writeFile(meta_path, JSON.stringify({
                                 version: file_last_version,
-                                digest: sha256(self.file_last_text)
+                                digest: sha256(self.file_last_text),
+                                peer: self.peer,
+                                local_edit_counter: self.local_edit_counter
                             }))
                         }
 
@@ -698,7 +714,7 @@ async function proxy_url(url) {
                     let cur = await braid_text.get(url, {})
                     if (cur.version.length) return cur.version
                 },
-                peer
+                peer: self.peer
             }).then(x => {
                 if (x.status === 209) x.subscribe(async update => {
                     console.log(`got external update about ${url}`)
@@ -712,7 +728,7 @@ async function proxy_url(url) {
 
                     if (!start_something()) return
 
-                    await braid_text.put(url, { ...update, peer, merge_type: 'dt' })
+                    await braid_text.put(url, { ...update, peer: self.peer, merge_type: 'dt' })
 
 
                     self.signal_file_needs_writing()
@@ -804,11 +820,11 @@ async function proxy_url(url) {
                 braid_text.get(url, braid_text_get_options = {
                     parents,
                     merge_type: 'dt',
-                    peer,
+                    peer: self.peer,
                     subscribe: async (u) => {
                         if (u.version.length) {
                             self.signal_file_needs_writing()
-                            in_parallel(() => send_out({...u, peer}))
+                            in_parallel(() => send_out({...u, peer: self.peer}))
                         }
                     },
                 })
@@ -821,7 +837,7 @@ async function proxy_url(url) {
         // for config and errors file, listen for web changes
         if (!is_external_link) braid_text.get(url, braid_text_get_options = {
             merge_type: 'dt',
-            peer,
+            peer: self.peer,
             subscribe: self.signal_file_needs_writing,
         })
 
