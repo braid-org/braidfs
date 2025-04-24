@@ -482,7 +482,7 @@ async function proxy_url(url) {
 
                     let a = new AbortController()
                     aborts.add(a)
-                    await braid_fetch(url, {
+                    var r = await braid_fetch(url, {
                         signal: a.signal,
                         headers: {
                             "Merge-Type": "dt",
@@ -494,6 +494,16 @@ async function proxy_url(url) {
                         ...stuff
                     })
                     aborts.delete(a)
+                    // if we're not authorized,
+                    if (r.status == 401 || r.status == 403) {
+                        // and it's one of our versions (a local edit),
+                        if (self.peer === braid_text.decode_version(stuff.version[0])[0]) {
+                            // then revert it
+                            console.log(`access denied: reverting local edits`)
+                            unproxy_url(url)
+                            proxy_url(url)
+                        }
+                    }
                 } catch (e) {
                     if (e?.name !== "AbortError") console.log(e)
                 }
