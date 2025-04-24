@@ -48,14 +48,17 @@ require('fs').mkdirSync(proxy_base_meta, { recursive: true })
 require('fs').mkdirSync(trash, { recursive: true })
 require('fs').mkdirSync(temp_folder, { recursive: true })
 
-// process command line args
-let to_run_in_background = process.platform === 'darwin' ? `
+// Add instructions for how to run in the background on this OS
+var to_run_in_background = process.platform === 'darwin' ? `
 To run daemon in background:
     launchctl submit -l org.braid.braidfs -- braidfs run` : ''
-let argv = process.argv.slice(2)
+// ...except this doesn't work yet.  So disable.
+to_run_in_background = ''
 
 console.log(`braidfs version: ${require(`${__dirname}/package.json`).version}`)
 
+// process command line args
+var argv = process.argv.slice(2)
 if (argv.length === 1 && argv[0].match(/^(run|serve)$/)) {
     return main()
 } else if (argv.length && argv.length % 2 == 0 && argv.every((x, i) => i % 2 != 0 || x.match(/^(sync|unsync)$/))) {
