@@ -681,9 +681,9 @@ async function proxy_url(url) {
                             self.file_last_text = body
                             self.file_ignore_until = Date.now() + 1000
                             await require('fs').promises.writeFile(fullpath, self.file_last_text)
-
-                            await write_meta_file()
                         }
+
+                        await write_meta_file()
 
                         if (await is_read_only(fullpath) !== self.file_read_only) {
                             self.file_ignore_until = Date.now() + 1000
