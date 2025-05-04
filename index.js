@@ -4,10 +4,10 @@ var { diff_main } = require(`${__dirname}/diff.js`),
     braid_text = require("braid-text"),
     braid_fetch = require('braid-http').fetch
 
-var proxy_base = `${require('os').homedir()}/http`,
-    braidfs_config_dir = `${proxy_base}/.braidfs`,
+var sync_base = `${require('os').homedir()}/http`,
+    braidfs_config_dir = `${sync_base}/.braidfs`,
     braidfs_config_file = `${braidfs_config_dir}/config`,
-    proxy_base_meta = `${braidfs_config_dir}/proxy_base_meta`
+    sync_base_meta = `${braidfs_config_dir}/proxy_base_meta`
 braid_text.db_folder = `${braidfs_config_dir}/braid-text-db`
 var trash = `${braidfs_config_dir}/trash`
 var temp_folder = `${braidfs_config_dir}/temp`
@@ -15,7 +15,7 @@ var temp_folder = `${braidfs_config_dir}/temp`
 var config = null,
     watcher_misses = 0
 
-if (require('fs').existsSync(proxy_base)) {
+if (require('fs').existsSync(sync_base)) {
     try {
         config = require('fs').readFileSync(braidfs_config_file, 'utf8')
     } catch (e) { return console.log(`could not find config file: ${braidfs_config_file}`) }
@@ -44,7 +44,7 @@ if (require('fs').existsSync(proxy_base)) {
     require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
 }
 
-require('fs').mkdirSync(proxy_base_meta, { recursive: true })
+require('fs').mkdirSync(sync_base_meta, { recursive: true })
 require('fs').mkdirSync(trash, { recursive: true })
 require('fs').mkdirSync(temp_folder, { recursive: true })
 
@@ -67,7 +67,7 @@ if (argv.length === 1 && argv[0].match(/^(run|serve)$/)) {
             var sync = argv[i] === 'sync',
                 url = argv[i + 1]
             if (!url.match(/^https?:\/\//)) {
-                if (url.startsWith('/')) url = require('path').relative(proxy_base, url)
+                if (url.startsWith('/')) url = require('path').relative(sync_base, url)
                 url = `https://${url}`
             }
             console.log(`${sync ? '' : 'un'}subscribing ${sync ? 'to' : 'from'} ${url}`)
@@ -127,9 +127,9 @@ async function main() {
                 var fullpath = decodeURIComponent(m[1])
                 var hash = decodeURIComponent(m[2])
 
-                var path = require('path').relative(proxy_base, fullpath)
-                var proxy = await proxy_url.cache[normalize_url(path)]
-                var version = proxy?.hash_to_version_cache.get(hash)?.version
+                var path = require('path').relative(sync_base, fullpath)
+                var sync = await sync_url.cache[normalize_url(path)]
+                var version = sync?.hash_to_version_cache.get(hash)?.version
                 if (!version) res.statusCode = 404
                 return res.end(JSON.stringify(version))
             }
@@ -137,11 +137,11 @@ async function main() {
             var m = url.match(/^\.braidfs\/set_version\/([^\/]*)\/([^\/]*)/)
             if (m) {
                 var fullpath = decodeURIComponent(m[1])
-                var path = require('path').relative(proxy_base, fullpath)
-                var proxy = await proxy_url.cache[normalize_url(path)]
+                var path = require('path').relative(sync_base, fullpath)
+                var sync = await sync_url.cache[normalize_url(path)]
 
                 var parents = JSON.parse(decodeURIComponent(m[2]))
-                var parent_text = proxy?.version_to_text_cache.get(JSON.stringify(parents)) ?? (await braid_text.get(proxy.url, { parents })).body
+                var parent_text = sync?.version_to_text_cache.get(JSON.stringify(parents)) ?? (await braid_text.get(sync.url, { parents })).body
 
                 var text = await new Promise(done => {
                     const chunks = []
@@ -152,14 +152,14 @@ async function main() {
                 var patches = diff(parent_text, text)
 
                 if (patches.length) {
-                    proxy.local_edit_counter += patches_to_code_points(patches, parent_text)
-                    var version = [proxy.peer + "-" + (proxy.local_edit_counter - 1)]
-                    await braid_text.put(proxy.url, { version, parents, patches, merge_type: 'dt' })
+                    sync.local_edit_counter += patches_to_code_points(patches, parent_text)
+                    var version = [sync.peer + "-" + (sync.local_edit_counter - 1)]
+                    await braid_text.put(sync.url, { version, parents, patches, merge_type: 'dt' })
 
                     // may be able to do this more efficiently.. we want to make sure we're capturing a file write that is after our version was written.. there may be a way we can avoid calling file_needs_writing here
                     var stat = await new Promise(done => {
-                        proxy.file_written_cbs.push(done)
-                        proxy.signal_file_needs_writing()
+                        sync.file_written_cbs.push(done)
+                        sync.signal_file_needs_writing()
                     })
 
                     res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -182,7 +182,7 @@ async function main() {
         console.log(`daemon started on port ${config.port}`)
         if (!config.allow_remote_access) console.log('!! only accessible from localhost !!')
 
-        proxy_url('.braidfs/config').then(() => {
+        sync_url('.braidfs/config').then(() => {
             braid_text.get('.braidfs/config', {
                 subscribe: async update => {
                     let prev = config
@@ -195,10 +195,10 @@ async function main() {
                         var old_syncs = Object.entries(prev.sync).filter(x => x[1]).map(x => normalize_url(x[0]).replace(/^https?:\/\//, ''))
                         var new_syncs = new Set(Object.entries(config.sync).filter(x => x[1]).map(x => normalize_url(x[0]).replace(/^https?:\/\//, '')))
                         for (let url of old_syncs.filter(x => !new_syncs.has(x)))
-                            unproxy_url(url)
+                            unsync_url(url)
 
-                        // proxy all the new stuff
-                        for (let x of Object.entries(config.sync)) if (x[1]) proxy_url(x[0])
+                        // sync all the new stuff
+                        for (let x of Object.entries(config.sync)) if (x[1]) sync_url(x[0])
 
                         // if any auth stuff has changed,
                         // have the appropriate connections reconnect
@@ -212,7 +212,7 @@ async function main() {
                                 || JSON.stringify(prev.cookies[domain]) !== JSON.stringify(v))
                                 changed.add(domain)
                         // ok, have every domain which has changed reconnect
-                        for (let [path, x] of Object.entries(proxy_url.cache))
+                        for (let [path, x] of Object.entries(sync_url.cache))
                             if (changed.has(path.split(/\//)[0].split(/:/)[0]))
                                 (await x).reconnect?.()
                     } catch (e) {
@@ -222,10 +222,10 @@ async function main() {
                 }
             })
         })
-        proxy_url('.braidfs/errors')
+        sync_url('.braidfs/errors')
 
         console.log({ sync: config.sync })
-        for (let x of Object.entries(config.sync)) if (x[1]) proxy_url(x[0])
+        for (let x of Object.entries(config.sync)) if (x[1]) sync_url(x[0])
 
         watch_files()
         setTimeout(scan_files, 1200)
@@ -286,28 +286,28 @@ async function watch_files() {
     await w?.close()
 
     console.log('watch files..')
-    watch_files.watcher = require('chokidar').watch(proxy_base).
+    watch_files.watcher = require('chokidar').watch(sync_base).
         on('add', x => chokidar_handler(x, 'add')).
         on('change', x => chokidar_handler(x, 'change')).
         on('unlink', x => chokidar_handler(x, 'unlink'))
 
     async function chokidar_handler(fullpath, event) {
-        // Make sure the path is within proxy_base..
-        if (!fullpath.startsWith(proxy_base))
-            return on_watcher_miss(`path ${fullpath} outside ${proxy_base}`)
+        // Make sure the path is within sync_base..
+        if (!fullpath.startsWith(sync_base))
+            return on_watcher_miss(`path ${fullpath} outside ${sync_base}`)
 
         // Make sure the path is to a file, and not a directory
         if (event != 'unlink' && (await require('fs').promises.stat(fullpath)).isDirectory())
             return on_watcher_miss(`expected file, got: ${fullpath}`)
 
-        var path = require('path').relative(proxy_base, fullpath)
+        var path = require('path').relative(sync_base, fullpath)
         if (skip_file(path)) return
         console.log(`file event: ${path}, event: ${event}`)
 
-        var proxy = await proxy_url.cache[normalize_url(path)]
+        var sync = await sync_url.cache[normalize_url(path)]
 
-        if (proxy && event != 'add') proxy.signal_file_needs_reading()
-        if (!proxy && event != 'unlink') await trash_file(fullpath, path)
+        if (sync && event != 'add') sync.signal_file_needs_reading()
+        if (!sync && event != 'unlink') await trash_file(fullpath, path)
     }
 }
 
@@ -320,7 +320,7 @@ async function scan_files() {
     while (scan_files.do_again) {
         scan_files.do_again = false
         console.log(`scan files..`)
-        if (await f(proxy_base))
+        if (await f(sync_base))
             on_watcher_miss(`scanner picked up a change that the watcher should have gotten`, false)
     }
     scan_files.running = false
@@ -328,7 +328,7 @@ async function scan_files() {
     scan_files.timeout = setTimeout(scan_files, config.scan_interval_ms ?? (20 * 1000))
 
     async function f(fullpath) {
-        path = require('path').relative(proxy_base, fullpath)
+        path = require('path').relative(sync_base, fullpath)
         if (skip_file(path)) return
 
         let stat = await require('fs').promises.stat(fullpath, { bigint: true })
@@ -338,30 +338,30 @@ async function scan_files() {
                 found ||= await f(`${fullpath}/${file}`)
             return found
         } else {
-            var proxy = await proxy_url.cache[normalize_url(path)]
-            if (!proxy) return await trash_file(fullpath, path)
+            var sync = await sync_url.cache[normalize_url(path)]
+            if (!sync) return await trash_file(fullpath, path)
 
             stat = await require('fs').promises.stat(fullpath, { bigint: true })
-            if (!stat_eq(stat, proxy.file_last_stat)) {
+            if (!stat_eq(stat, sync.file_last_stat)) {
                 console.log(`scan thinks ${path} has changed`)
-                proxy.signal_file_needs_reading()
+                sync.signal_file_needs_reading()
                 return true
             }
         }
     }
 }
 
-function unproxy_url(url) {
+function unsync_url(url) {
     url = normalize_url(url).replace(/^https?:\/\//, '')
-    if (!proxy_url.cache?.[url]) return
+    if (!sync_url.cache?.[url]) return
 
-    console.log(`unproxy_url: ${url}`)
+    console.log(`unsync_url: ${url}`)
 
-    delete proxy_url.cache[url]
-    unproxy_url.cache[url] = unproxy_url.cache[url]()
+    delete sync_url.cache[url]
+    unsync_url.cache[url] = unsync_url.cache[url]()
 }
 
-async function proxy_url(url) {
+async function sync_url(url) {
     // normalize url by removing any trailing /index/index/
     var normalized_url = normalize_url(url),
         wasnt_normal = normalized_url != url
@@ -369,12 +369,12 @@ async function proxy_url(url) {
 
     var is_external_link = url.match(/^https?:\/\//),
         path = is_external_link ? url.replace(/^https?:\/\//, '') : url,
-        fullpath = `${proxy_base}/${path}`,
-        meta_path = `${proxy_base_meta}/${braid_text.encode_filename(url)}`
+        fullpath = `${sync_base}/${path}`,
+        meta_path = `${sync_base_meta}/${braid_text.encode_filename(url)}`
 
-    if (!proxy_url.cache) proxy_url.cache = {}
-    if (!proxy_url.chain) proxy_url.chain = Promise.resolve()
-    if (!proxy_url.cache[path]) proxy_url.cache[path] = proxy_url.chain = proxy_url.chain.then(async () => {
+    if (!sync_url.cache) sync_url.cache = {}
+    if (!sync_url.chain) sync_url.chain = Promise.resolve()
+    if (!sync_url.cache[path]) sync_url.cache[path] = sync_url.chain = sync_url.chain.then(async () => {
         var freed = false,
             aborts = new Set(),
             braid_text_get_options = null,
@@ -389,9 +389,9 @@ async function proxy_url(url) {
             wait_count--
             if (!wait_count) wait_promise_done()
         }
-        if (!unproxy_url.cache) unproxy_url.cache = {}
-        var old_unproxy = unproxy_url.cache[path]
-        unproxy_url.cache[path] = async () => {
+        if (!unsync_url.cache) unsync_url.cache = {}
+        var old_unsync = unsync_url.cache[path]
+        unsync_url.cache[path] = async () => {
             freed = true
             for (let a of aborts) a.abort()
             await wait_promise
@@ -406,11 +406,11 @@ async function proxy_url(url) {
             try { await require('fs').promises.unlink(meta_path) } catch (e) {}
             try { await require('fs').promises.unlink(await get_fullpath()) } catch (e) {}
         }
-        await old_unproxy
+        await old_unsync
 
         var self = {url}
 
-        console.log(`proxy_url: ${url}`)
+        console.log(`sync_url: ${url}`)
 
         if (!start_something()) return
 
@@ -523,8 +523,8 @@ async function proxy_url(url) {
                 if (self.peer === braid_text.decode_version(stuff.version[0])[0]) {
                     // then revert it
                     console.log(`access denied: reverting local edits`)
-                    unproxy_url(url)
-                    proxy_url(url)
+                    unsync_url(url)
+                    sync_url(url)
                 }
             }
         }
@@ -880,7 +880,7 @@ async function proxy_url(url) {
 
         return self
     })
-    return await proxy_url.cache[url]
+    return await sync_url.cache[url]
 }
 
 async function ensure_path(path) {
