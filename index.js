@@ -711,7 +711,8 @@ async function sync_url(url) {
             //    then we can just remove those
             //    and add event
             var fork_set = new Set(self.fork_point)
-            if (parents.every(p => fork_set.has(p))) {
+            if (parents.length &&
+                parents.every(p => fork_set.has(p))) {
                 parents.forEach(p => fork_set.delete(p))
                 fork_set.add(event)
                 self.fork_point = [...fork_set.values()]
