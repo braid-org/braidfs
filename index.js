@@ -907,7 +907,7 @@ async function ensure_path(path) {
 ////////////////////////////////
 
 function normalize_url(url) {
-    return url.replace(/(\/index|\/)+$/, '')
+    return url.replace(/(\/index)*\/?$/, '')
 }
 
 async function is_dir(p) {
