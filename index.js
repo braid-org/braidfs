@@ -530,7 +530,7 @@ async function sync_url(url) {
         }
 
         if (!start_something()) return
-        await within_file_lock(fullpath, async () => {
+        await within_fiber(fullpath, async () => {
             var fullpath = await get_fullpath()
             if (await require('fs').promises.access(meta_path).then(
                 () => 1, () => 0)) {
@@ -584,7 +584,7 @@ async function sync_url(url) {
 
             if (!start_something()) return
 
-            await within_file_lock(fullpath, async () => {
+            await within_fiber(fullpath, async () => {
                 var fullpath = await get_fullpath()
 
                 while (file_needs_reading || file_needs_writing) {
@@ -888,7 +888,7 @@ async function ensure_path(path) {
     var parts = path.split('/').slice(1)
     for (var i = 1; i <= parts.length; i++) {
         var partial = '/' + parts.slice(0, i).join('/')
-        await within_file_lock(partial, async () => {
+        await within_fiber(normalize_url(partial), async () => {
             try {
                 let stat = await require("fs").promises.stat(partial)
                 if (stat.isDirectory()) return // good
@@ -1025,21 +1025,18 @@ async function set_read_only(fullpath, read_only) {
     }
 }
 
-async function get_file_lock(fullpath) {
-    if (!get_file_lock.locks) get_file_lock.locks = {}
-    if (!get_file_lock.locks[fullpath]) get_file_lock.locks[fullpath] = Promise.resolve()
-    return new Promise(done =>
-        get_file_lock.locks[fullpath] = get_file_lock.locks[fullpath].then(() =>
-            new Promise(done2 => done(done2))))
-}
-
-async function within_file_lock(fullpath, func) {
-    var lock = await get_file_lock(fullpath)
-    try {
-        return await func()
-    } finally {
-        lock()
-    }
+function within_fiber(id, func) {
+    if (!within_fiber.chains) within_fiber.chains = {}
+    var prev = within_fiber.chains[id] || Promise.resolve()
+    var curr = prev.then(async () => {
+        try {
+            return await func()
+        } finally {
+            if (within_fiber.chains[id] === curr)
+                delete within_fiber.chains[id]
+        }
+    })
+    return within_fiber.chains[id] = curr
 }
 
 async function file_exists(fullpath) {
