@@ -296,12 +296,14 @@ async function watch_files() {
         if (!fullpath.startsWith(sync_base))
             return on_watcher_miss(`path ${fullpath} outside ${sync_base}`)
 
+        // See if this is a file we should skip..
+        var path = require('path').relative(sync_base, fullpath)
+        if (skip_file(path)) return
+
         // Make sure the path is to a file, and not a directory
         if (event != 'unlink' && (await require('fs').promises.stat(fullpath)).isDirectory())
             return on_watcher_miss(`expected file, got: ${fullpath}`)
 
-        var path = require('path').relative(sync_base, fullpath)
-        if (skip_file(path)) return
         console.log(`file event: ${path}, event: ${event}`)
 
         var sync = await sync_url.cache[normalize_url(path)]
@@ -358,7 +360,8 @@ function unsync_url(url) {
     console.log(`unsync_url: ${url}`)
 
     delete sync_url.cache[url]
-    unsync_url.cache[url] = unsync_url.cache[url]()
+    sync_url.chain = sync_url.chain.then(unsync_url.cache[url])
+    delete unsync_url.cache[url]
 }
 
 async function sync_url(url) {
@@ -374,7 +377,7 @@ async function sync_url(url) {
 
     if (!sync_url.cache) sync_url.cache = {}
     if (!sync_url.chain) sync_url.chain = Promise.resolve()
-    if (!sync_url.cache[path]) sync_url.cache[path] = sync_url.chain = sync_url.chain.then(async () => {
+    if (!sync_url.cache[path]) {
         var freed = false,
             aborts = new Set(),
             braid_text_get_options = null,
@@ -390,7 +393,6 @@ async function sync_url(url) {
             if (!wait_count) wait_promise_done()
         }
         if (!unsync_url.cache) unsync_url.cache = {}
-        var old_unsync = unsync_url.cache[path]
         unsync_url.cache[path] = async () => {
             freed = true
             for (let a of aborts) a.abort()
@@ -406,8 +408,9 @@ async function sync_url(url) {
             try { await require('fs').promises.unlink(meta_path) } catch (e) {}
             try { await require('fs').promises.unlink(await get_fullpath()) } catch (e) {}
         }
-        await old_unsync
-
+        sync_url.cache[path] = sync_url.chain = sync_url.chain.then(init)
+    }
+    async function init() {
         var self = {url}
 
         console.log(`sync_url: ${url}`)
@@ -636,9 +639,7 @@ async function sync_url(url) {
 
                             add_to_version_cache(text, version)
 
-                            send_out({ version, parents, patches, peer: self.peer })
-
-                            await braid_text.put(url, { version, parents, patches, peer: self.peer, merge_type: 'dt' })
+                            await braid_text.put(url, { version, parents, patches, merge_type: 'dt' })
 
                             await write_meta_file()
                         } else {
@@ -782,9 +783,12 @@ async function sync_url(url) {
             return self.fork_point
         }
 
-        if (is_external_link) find_fork_point().then(fork_point => {
+        var initial_connect_done
+        var initial_connect_promise = new Promise(done => initial_connect_done = done)
+
+        if (is_external_link) find_fork_point().then(async fork_point => {
+            await send_new_stuff(fork_point)
             connect(fork_point)
-            send_new_stuff(fork_point)
         })
         
         function connect(fork_point) {
@@ -827,7 +831,9 @@ async function sync_url(url) {
                 },
                 peer: self.peer
             }).then(x => {
-                if (x.status === 209) x.subscribe(async update => {
+                if (x.status !== 209) throw new Error(`unexpected status: ${x.status}`)
+                initial_connect_done()
+                x.subscribe(async update => {
                     console.log(`got external update about ${url}`)
 
                     if (update.body) update.body = update.body_text
@@ -854,18 +860,15 @@ async function sync_url(url) {
 
         // send them stuff we have but they don't
         async function send_new_stuff(fork_point) {
-            var r = await my_fetch({ method: "HEAD" })
-            if (r.headers.get('editable') === 'false')
-                return console.log('do not send updates for read-only file: ' + url)
-
             var in_parallel = create_parallel_promises(10)
-            braid_text.get(url, braid_text_get_options = {
+            await braid_text.get(url, braid_text_get_options = {
                 parents: fork_point,
                 merge_type: 'dt',
                 peer: self.peer,
                 subscribe: async (u) => {
                     if (u.version.length) {
                         self.signal_file_needs_writing()
+                        await initial_connect_promise
                         in_parallel(() => send_out({...u, peer: self.peer}))
                     }
                 },
@@ -880,7 +883,7 @@ async function sync_url(url) {
         })
 
         return self
-    })
+    }
     return await sync_url.cache[url]
 }
 
