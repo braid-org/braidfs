@@ -498,7 +498,7 @@ async function sync_url(url) {
                         "Content-Type": 'text/plain',
                         ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
                     },
-                    retry: true,
+                    retry: { retryRes: () => true },
                     ...params
                 })
             } catch (e) {
@@ -812,6 +812,7 @@ async function sync_url(url) {
                 },
                 subscribe: true,
                 retry: {
+                    retryRes: () => true,
                     onRes: (res) => {
                         if (res.status !== 209)
                             return log_error(`Can't sync ${url} -- got bad response ${res.status} from server (expected 209)`)
