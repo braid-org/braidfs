@@ -745,11 +745,11 @@ async function sync_url(url) {
         async function find_fork_point() {
             console.log(`[find_fork_point] url: ${url}`)
 
-            // see if they have the fork point
+            // see if remote has the fork point
             if (self.fork_point) {
                 var r = await my_fetch({ method: "HEAD", version: self.fork_point })
                 if (r.ok) {
-                    console.log(`[find_fork_point] they have our latest fork point, horray!`)
+                    console.log(`[find_fork_point] it has our latest fork point, hooray!`)
                     return self.fork_point
                 }
             }
@@ -849,7 +849,7 @@ async function sync_url(url) {
                     await braid_text.put(url, { ...update, peer: self.peer, merge_type: 'dt' })
 
                     // the server is giving us this version,
-                    // so they must have it,
+                    // so it must have it,
                     // so let's add it to our fork point
                     await self.update_fork_point(update.version[0], update.parents)
 
@@ -859,7 +859,7 @@ async function sync_url(url) {
             }).catch(e => (e?.name !== "AbortError") && console.log(e))
         }
 
-        // send them stuff we have but they don't
+        // send it stuff we have but it doesn't't
         async function send_new_stuff(fork_point) {
             var in_parallel = create_parallel_promises(10)
             await braid_text.get(url, braid_text_get_options = {
