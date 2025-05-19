@@ -375,6 +375,12 @@ async function sync_url(url) {
         fullpath = `${sync_base}/${path}`,
         meta_path = `${sync_base_meta}/${braid_text.encode_filename(url)}`
 
+    async function get_fullpath() {
+        var p = fullpath
+        while (await is_dir(p)) p = require("path").join(p, 'index')
+        return p
+    }
+
     if (!sync_url.cache) sync_url.cache = {}
     if (!sync_url.chain) sync_url.chain = Promise.resolve()
     if (!sync_url.cache[path]) {
@@ -424,12 +430,6 @@ async function sync_url(url) {
         await ensure_path(require("path").dirname(fullpath))
 
         finish_something()
-
-        async function get_fullpath() {
-            var p = fullpath
-            while (await is_dir(p)) p = require("path").join(p, 'index')
-            return p
-        }
 
         self.peer = Math.random().toString(36).slice(2)
         self.local_edit_counter = 0
@@ -498,7 +498,7 @@ async function sync_url(url) {
                         "Content-Type": 'text/plain',
                         ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
                     },
-                    retry: { retryRes: () => true },
+                    retry: { retryRes: r => r.status !== 401 && r.status !== 403 },
                     ...params
                 })
             } catch (e) {
