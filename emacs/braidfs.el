@@ -162,18 +162,20 @@ Can be:
 (defun braidfs-sync-file (&optional filename)
   (interactive)
   (setq filename (or filename (buffer-file-name)))
-  (shell-command (concat "braidfs sync "
-                         (replace-regexp-in-string "^/home/[^/]+/http/"
-                                                   "https://"
-                                                   filename))))
+  (let* ((default-directory (expand-file-name "~/")))
+    (shell-command (concat "braidfs sync "
+                           (replace-regexp-in-string "^/home/[^/]+/http/"
+                                                     "https://"
+                                                     filename)))))
 
 (defun braidfs-unsync-file (&optional filename)
   (interactive)
   (setq filename (or filename (buffer-file-name)))
-  (shell-command (concat "braidfs unsync "
+  (let* ((default-directory (expand-file-name "~/")))
+    (shell-command (concat "braidfs unsync "
                          (replace-regexp-in-string "^/home/[^/]+/http/"
                                                    "https://"
-                                                   filename))))
+                                                   filename)))))
 
 (defun braidfs-post-command-hook ()
   "Check if we did undo back to an unmodified buffer.  If so, check for reload."
