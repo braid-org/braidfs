@@ -375,28 +375,25 @@ async function sync_url(url) {
         fullpath = `${sync_base}/${path}`,
         meta_path = `${sync_base_meta}/${braid_text.encode_filename(url)}`
 
-    async function get_fullpath() {
-        var p = fullpath
-        while (await is_dir(p)) p = require("path").join(p, 'index')
-        return p
-    }
-
     if (!sync_url.cache) sync_url.cache = {}
     if (!sync_url.chain) sync_url.chain = Promise.resolve()
     if (!sync_url.cache[path]) {
         var freed = false,
             aborts = new Set(),
-            braid_text_get_options = null,
-            wait_count = 0
-        var wait_promise, wait_promise_done
-        var start_something = () => {
-            if (freed) return
-            if (!wait_count) wait_promise = new Promise(done => wait_promise_done = done)
-            return ++wait_count
+            braid_text_get_options = null
+        var wait_promise = Promise.resolve()
+        var wait_on = p => {
+            wait_promise = wait_promise.then(() => p)
+            return p
         }
-        var finish_something = () => {
-            wait_count--
-            if (!wait_count) wait_promise_done()
+        var get_fullpath = async () => {
+            if (freed) return
+            var p = fullpath
+            while (await wait_on(is_dir(p))) {
+                if (freed) return
+                p = require("path").join(p, 'index')
+            }
+            return p
         }
         if (!unsync_url.cache) unsync_url.cache = {}
         unsync_url.cache[path] = async () => {
@@ -417,19 +414,25 @@ async function sync_url(url) {
         sync_url.cache[path] = sync_url.chain = sync_url.chain.then(init)
     }
     async function init() {
+        if (freed) return
+
         var self = {url}
 
         console.log(`sync_url: ${url}`)
 
-        if (!start_something()) return
+        var resource = await braid_text.get_resource(url)
+        if (freed) return
 
         // if we're accessing /blah/index, it will be normalized to /blah,
         // but we still want to create a directory out of blah in this case
-        if (wasnt_normal && !(await is_dir(fullpath))) await ensure_path(fullpath)
+        if (wasnt_normal && !(await is_dir(fullpath))) {
+            if (freed) return
+            await ensure_path(fullpath)
+        }
+        if (freed) return
 
         await ensure_path(require("path").dirname(fullpath))
-
-        finish_something()
+        if (freed) return
 
         self.peer = Math.random().toString(36).slice(2)
         self.local_edit_counter = 0
@@ -487,7 +490,7 @@ async function sync_url(url) {
         }
 
         async function my_fetch(params) {
-            if (!start_something()) return
+            if (freed) return
             try {
                 var a = new AbortController()
                 aborts.add(a)
@@ -502,23 +505,26 @@ async function sync_url(url) {
                     ...params
                 })
             } catch (e) {
+                if (freed) return
                 if (e?.name !== "AbortError") console.log(e)
             } finally {
+                if (freed) return
                 aborts.delete(a)
-                finish_something()
             }
         }
         
         async function send_out(stuff) {
             if (!is_external_link) return
+            if (freed) return
 
             console.log(`send_out ${url} ${JSON.stringify(stuff, null, 4).slice(0, 1000)}`)
 
             var r = await my_fetch({ method: "PUT", ...stuff })
+            if (freed) return
 
             // the server has acknowledged this version,
             // so add it to the fork point
-            if (r.ok) await self.update_fork_point(stuff.version[0], stuff.parents)
+            if (r.ok) self.update_fork_point(stuff.version[0], stuff.parents)
 
             // if we're not authorized,
             if (r.status == 401 || r.status == 403) {
@@ -532,13 +538,18 @@ async function sync_url(url) {
             }
         }
 
-        if (!start_something()) return
         await within_fiber(fullpath, async () => {
+            if (freed) return
             var fullpath = await get_fullpath()
-            if (await require('fs').promises.access(meta_path).then(
-                () => 1, () => 0)) {
+            if (freed) return
+            if (await wait_on(require('fs').promises.access(meta_path).then(
+                () => 1, () => 0))) {
+                if (freed) return
+
                 // meta file exists
-                let meta = JSON.parse(await require('fs').promises.readFile(meta_path, { encoding: 'utf8' }))
+                let meta = JSON.parse(await wait_on(require('fs').promises.readFile(meta_path, { encoding: 'utf8' })))
+                if (freed) return
+                
                 // destructure stuff from the meta file
                 !({
                     version: file_last_version,
@@ -552,8 +563,9 @@ async function sync_url(url) {
                 if (!self.local_edit_counter) self.local_edit_counter = 0
 
                 try {
-                    self.file_last_text = (await braid_text.get(url, { version: file_last_version })).body
+                    self.file_last_text = (await wait_on(braid_text.get(url, { version: file_last_version }))).body
                 } catch (e) {
+                    if (freed) return
                     // the version from the meta file doesn't exist..
                     if (fullpath === braidfs_config_file) {
                         // in the case of the config file,
@@ -561,44 +573,49 @@ async function sync_url(url) {
                         // which we can acheive by setting file_last_version
                         // to the latest
                         console.log(`WARNING: there was an issue with the config file, and it is reverting to the contents at: ${braidfs_config_file}`)
-                        var x = await braid_text.get(url, {})
+                        var x = await wait_on(braid_text.get(url, {}))
+                        if (freed) return
                         file_last_version = x.version
                         self.file_last_text = x.body
                         file_last_digest = sha256(self.file_last_text)
                     } else throw new Error(`sync error: version not found: ${file_last_version}`)
                 }
+                if (freed) return
 
-                file_needs_writing = !v_eq(file_last_version, (await braid_text.get(url, {})).version)
+                file_needs_writing = !v_eq(file_last_version, (await wait_on(braid_text.get(url, {}))).version)
+                if (freed) return
 
                 // sanity check
                 if (file_last_digest && sha256(self.file_last_text) != file_last_digest) throw new Error('file_last_text does not match file_last_digest')
-            } else if (await require('fs').promises.access(fullpath).then(() => 1, () => 0)) {
+            } else if (await wait_on(require('fs').promises.access(fullpath).then(() => 1, () => 0))) {
+                if (freed) return
                 // file exists, but not meta file
                 file_last_version = []
                 self.file_last_text = ''
             }
         })
-        finish_something()
+        if (freed) return
 
         file_loop_pump()
         async function file_loop_pump() {
+            if (freed) return
             if (file_loop_pump_lock) return
             file_loop_pump_lock++
 
-            if (!start_something()) return
-
             await within_fiber(fullpath, async () => {
                 var fullpath = await get_fullpath()
+                if (freed) return
 
                 while (file_needs_reading || file_needs_writing) {
                     async function write_meta_file() {
-                        await require('fs').promises.writeFile(meta_path, JSON.stringify({
+                        if (freed) return
+                        await wait_on(require('fs').promises.writeFile(meta_path, JSON.stringify({
                             version: file_last_version,
                             digest: sha256(self.file_last_text),
                             peer: self.peer,
                             local_edit_counter: self.local_edit_counter,
                             fork_point: self.fork_point
-                        }))
+                        })))
                     }
 
                     if (file_needs_reading) {
@@ -607,22 +624,28 @@ async function sync_url(url) {
                         file_needs_reading = false
 
                         // check if file is missing, and create it if so..
-                        if (!(await file_exists(fullpath))) {
+                        if (!(await wait_on(file_exists(fullpath)))) {
+                            if (freed) return
+
                             console.log(`file not found, creating: ${fullpath}`)
                             
                             file_needs_writing = true
                             file_last_version = []
                             self.file_last_text = ''
 
-                            await require('fs').promises.writeFile(fullpath, self.file_last_text)
+                            await wait_on(require('fs').promises.writeFile(fullpath, self.file_last_text))
                         }
+                        if (freed) return
 
-                        if (self.file_read_only === null) try { self.file_read_only = await is_read_only(fullpath) } catch (e) { }
+                        if (self.file_read_only === null) try { self.file_read_only = await wait_on(is_read_only(fullpath)) } catch (e) { }
+                        if (freed) return
 
-                        let text = await require('fs').promises.readFile(
-                            fullpath, { encoding: 'utf8' })
+                        let text = await wait_on(require('fs').promises.readFile(
+                            fullpath, { encoding: 'utf8' }))
+                        if (freed) return
 
-                        var stat = await require('fs').promises.stat(fullpath, { bigint: true })
+                        var stat = await wait_on(require('fs').promises.stat(fullpath, { bigint: true }))
+                        if (freed) return
 
                         var patches = diff(self.file_last_text, text)
                         if (patches.length) {
@@ -639,9 +662,11 @@ async function sync_url(url) {
 
                             add_to_version_cache(text, version)
 
-                            await braid_text.put(url, { version, parents, patches, merge_type: 'dt' })
+                            await wait_on(braid_text.put(url, { version, parents, patches, merge_type: 'dt' }))
+                            if (freed) return
 
                             await write_meta_file()
+                            if (freed) return
                         } else {
                             add_to_version_cache(text, file_last_version)
 
@@ -658,13 +683,16 @@ async function sync_url(url) {
                     if (file_needs_writing === 'just_meta_file') {
                         file_needs_writing = false
                         await write_meta_file()
+                        if (freed) return
                     } else if (file_needs_writing) {
                         file_needs_writing = false
-                        let { version, body } = await braid_text.get(url, {})
+                        let { version, body } = await wait_on(braid_text.get(url, {}))
+                        if (freed) return
                         if (!v_eq(version, file_last_version)) {
                             // let's do a final check to see if anything has changed
                             // before writing out a new version of the file
-                            let text = await require('fs').promises.readFile(fullpath, { encoding: 'utf8' })
+                            let text = await wait_on(require('fs').promises.readFile(fullpath, { encoding: 'utf8' }))
+                            if (freed) return
                             if (self.file_last_text != text) {
                                 // if the text is different, let's read it first..
                                 file_needs_reading = true
@@ -676,22 +704,28 @@ async function sync_url(url) {
 
                             add_to_version_cache(body, version)
 
-                            try { if (await is_read_only(fullpath)) await set_read_only(fullpath, false) } catch (e) { }
+                            try { if (await wait_on(is_read_only(fullpath))) await wait_on(set_read_only(fullpath, false)) } catch (e) { }
+                            if (freed) return
 
                             file_last_version = version
                             self.file_last_text = body
                             self.file_ignore_until = Date.now() + 1000
-                            await require('fs').promises.writeFile(fullpath, self.file_last_text)
+                            await wait_on(require('fs').promises.writeFile(fullpath, self.file_last_text))
+                            if (freed) return
                         }
 
                         await write_meta_file()
+                        if (freed) return
 
-                        if (await is_read_only(fullpath) !== self.file_read_only) {
+                        if (await wait_on(is_read_only(fullpath) !== self.file_read_only)) {
+                            if (freed) return
                             self.file_ignore_until = Date.now() + 1000
-                            await set_read_only(fullpath, self.file_read_only)
+                            await wait_on(set_read_only(fullpath, self.file_read_only))
                         }
+                        if (freed) return
 
-                        self.file_last_stat = await require('fs').promises.stat(fullpath, { bigint: true })
+                        self.file_last_stat = await wait_on(require('fs').promises.stat(fullpath, { bigint: true }))
+                        if (freed) return
 
                         for (var cb of self.file_written_cbs) cb(self.file_last_stat)
                         self.file_written_cbs = []
@@ -699,30 +733,31 @@ async function sync_url(url) {
                 }
             })
 
-            finish_something()
-
             file_loop_pump_lock--
         }
 
-        self.update_fork_point = async (event, parents) => {
-            var resource = await braid_text.get_resource(url)
+        self.update_fork_point = (event, parents) => {
+            self.fork_point = extend_frontier(self.fork_point, event, parents)
+            self.signal_file_needs_writing(true)
+        }
 
+        function extend_frontier(frontier, event, parents) {
             // special case:
-            // if current fork point has all parents,
+            // if current frontier has all parents,
             //    then we can just remove those
             //    and add event
-            var fork_set = new Set(self.fork_point)
+            var frontier_set = new Set(frontier)
             if (parents.length &&
-                parents.every(p => fork_set.has(p))) {
-                parents.forEach(p => fork_set.delete(p))
-                fork_set.add(event)
-                self.fork_point = [...fork_set.values()]
+                parents.every(p => frontier_set.has(p))) {
+                parents.forEach(p => frontier_set.delete(p))
+                frontier_set.add(event)
+                frontier = [...frontier_set.values()]
             } else {
                 // full-proof approach..
-                var looking_for = fork_set
+                var looking_for = frontier_set
                 looking_for.add(event)
 
-                self.fork_point = []
+                frontier = []
                 var shadow = new Set()
 
                 var bytes = resource.doc.toBytes()
@@ -731,23 +766,24 @@ async function sync_url(url) {
                     var e = events[i].join('-')
                     if (looking_for.has(e)) {
                         looking_for.delete(e)
-                        if (!shadow.has(e)) self.fork_point.push(e)
+                        if (!shadow.has(e)) frontier.push(e)
                         shadow.add(e)
                     }
                     if (shadow.has(e))
                         parentss[i].forEach(p => shadow.add(p.join('-')))
                 }
             }
-            self.fork_point.sort()
-            self.signal_file_needs_writing(true)
+            return frontier.sort()
         }
 
         async function find_fork_point() {
+            if (freed) return
             console.log(`[find_fork_point] url: ${url}`)
 
             // see if remote has the fork point
             if (self.fork_point) {
                 var r = await my_fetch({ method: "HEAD", version: self.fork_point })
+                if (freed) return
                 if (r.ok) {
                     console.log(`[find_fork_point] it has our latest fork point, hooray!`)
                     return self.fork_point
@@ -755,7 +791,6 @@ async function sync_url(url) {
             }
 
             // otherwise let's binary search for new fork point..
-            var resource = await braid_text.get_resource(url)
             var bytes = resource.doc.toBytes()
             var [_, events, __] = braid_text.dt_parse([...bytes])
             events = events.map(x => x.join('-'))
@@ -771,6 +806,7 @@ async function sync_url(url) {
 
                 var st = Date.now()
                 var r = await my_fetch({ method: "HEAD", version })
+                if (freed) return                
                 console.log(`fetched in ${Date.now() - st}`)
 
                 if (r.ok) {
@@ -787,14 +823,18 @@ async function sync_url(url) {
         var initial_connect_promise = new Promise(done => initial_connect_done = done)
 
         if (is_external_link) find_fork_point().then(async fork_point => {
+            if (freed) return                
             await send_new_stuff(fork_point)
+            if (freed) return                
             connect(fork_point)
         })
         
         function connect(fork_point) {
+            if (freed) return                
             let a = new AbortController()
             aborts.add(a)
             self.reconnect = () => {
+                if (freed) return
                 console.log(`reconnecting ${url}`)
 
                 aborts.delete(a)
@@ -826,15 +866,19 @@ async function sync_url(url) {
                 },
                 heartbeats: 120,
                 parents: async () => {
+                    if (freed) return
                     var x = fork_point || await find_fork_point()
+                    if (freed) return
                     fork_point = null
                     return x
                 },
                 peer: self.peer
             }).then(x => {
+                if (freed) return
                 if (x.status !== 209) throw new Error(`unexpected status: ${x.status}`)
                 initial_connect_done()
                 x.subscribe(async update => {
+                    if (freed) return
                     console.log(`got external update about ${url}`)
 
                     if (update.body) update.body = update.body_text
@@ -844,36 +888,37 @@ async function sync_url(url) {
                     if (update.version.length === 0) return
                     if (update.version.length !== 1) throw 'unexpected'
 
-                    if (!start_something()) return
-
-                    await braid_text.put(url, { ...update, peer: self.peer, merge_type: 'dt' })
+                    await wait_on(braid_text.put(url, { ...update, peer: self.peer, merge_type: 'dt' }))
+                    console.log(`PUT DONE!`)
+                    if (freed) return
 
                     // the server is giving us this version,
                     // so it must have it,
                     // so let's add it to our fork point
-                    await self.update_fork_point(update.version[0], update.parents)
+                    self.update_fork_point(update.version[0], update.parents)
 
                     self.signal_file_needs_writing()
-                    finish_something()
                 }, e => (e?.name !== "AbortError") && console.log(e))
             }).catch(e => (e?.name !== "AbortError") && console.log(e))
         }
 
         // send it stuff we have but it doesn't't
         async function send_new_stuff(fork_point) {
+            if (freed) return                
             var in_parallel = create_parallel_promises(10)
-            await braid_text.get(url, braid_text_get_options = {
+            await wait_on(braid_text.get(url, braid_text_get_options = {
                 parents: fork_point,
                 merge_type: 'dt',
                 peer: self.peer,
                 subscribe: async (u) => {
+                    if (freed) return
                     if (u.version.length) {
                         self.signal_file_needs_writing()
                         await initial_connect_promise
                         in_parallel(() => send_out({...u, peer: self.peer}))
                     }
                 },
-            })
+            }))
         }
 
         // for config and errors file, listen for web changes
