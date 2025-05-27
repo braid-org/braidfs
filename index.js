@@ -717,7 +717,7 @@ async function sync_url(url) {
                         await write_meta_file()
                         if (freed) return
 
-                        if (await wait_on(is_read_only(fullpath) !== self.file_read_only)) {
+                        if (await wait_on(is_read_only(fullpath)) !== self.file_read_only) {
                             if (freed) return
                             self.file_ignore_until = Date.now() + 1000
                             await wait_on(set_read_only(fullpath, self.file_read_only))
@@ -889,7 +889,6 @@ async function sync_url(url) {
                     if (update.version.length !== 1) throw 'unexpected'
 
                     await wait_on(braid_text.put(url, { ...update, peer: self.peer, merge_type: 'dt' }))
-                    console.log(`PUT DONE!`)
                     if (freed) return
 
                     // the server is giving us this version,
@@ -904,8 +903,52 @@ async function sync_url(url) {
 
         // send it stuff we have but it doesn't't
         async function send_new_stuff(fork_point) {
-            if (freed) return                
-            var in_parallel = create_parallel_promises(10)
+            if (freed) return
+            var q = []
+            var in_flight = new Map()
+            var max_in_flight = 10
+            var send_pump_lock = 0
+
+            async function send_pump() {
+                send_pump_lock++
+                if (send_pump_lock > 1) return
+                try {
+                    if (freed) return
+                    if (in_flight.size >= max_in_flight) return
+                    if (!q.length) {
+                        var frontier = self.fork_point
+                        for (var u of in_flight.values())
+                            frontier = extend_frontier(frontier, u.version[0], u.parents)
+
+                        var options = {
+                            parents: frontier,
+                            merge_type: 'dt',
+                            peer: self.peer,
+                            subscribe: u => u.version.length && q.push(u)
+                        }
+                        await braid_text.get(url, options)
+                        await braid_text.forget(url, options)
+                    }
+                    while (q.length && in_flight.size < max_in_flight) {
+                        let u = q.shift()
+                        in_flight.set(u.version[0], u);
+                        (async () => {
+                            await initial_connect_promise
+                            if (freed) return
+                            await send_out({...u, peer: self.peer})
+                            if (freed) return
+                            in_flight.delete(u.version[0])
+                            setTimeout(send_pump, 0)
+                        })()
+                    }
+                } finally {
+                    var retry = send_pump_lock > 1
+                    send_pump_lock = 0
+                    if (retry) setTimeout(send_pump, 0)
+                }
+            }
+
+            var initial_stuff = true
             await wait_on(braid_text.get(url, braid_text_get_options = {
                 parents: fork_point,
                 merge_type: 'dt',
@@ -914,11 +957,12 @@ async function sync_url(url) {
                     if (freed) return
                     if (u.version.length) {
                         self.signal_file_needs_writing()
-                        await initial_connect_promise
-                        in_parallel(() => send_out({...u, peer: self.peer}))
+                        if (initial_stuff || in_flight.size < max_in_flight) q.push(u)
+                        send_pump()
                     }
                 },
             }))
+            initial_stuff = false
         }
 
         // for config and errors file, listen for web changes
@@ -1097,15 +1141,4 @@ async function file_exists(fullpath) {
 
 function sha256(x) {
     return require('crypto').createHash('sha256').update(x).digest('base64')
-}
-
-function create_parallel_promises(N) {
-    var q = []
-    var n = 0
-    return async f => {
-        q.push(f)
-        n++
-        while (q.length && n <= N) await q.shift()()
-        n--
-    }
 }
