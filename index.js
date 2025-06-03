@@ -489,55 +489,6 @@ async function sync_url(url) {
             file_loop_pump()
         }
 
-        async function my_fetch(params) {
-            if (freed) return
-            try {
-                var a = new AbortController()
-                aborts.add(a)
-                return await braid_fetch(url, {
-                    signal: a.signal,
-                    headers: {
-                        "Merge-Type": "dt",
-                        "Content-Type": 'text/plain',
-                        ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
-                    },
-                    retry: { retryRes: r => r.status !== 401 && r.status !== 403 },
-                    ...params
-                })
-            } catch (e) {
-                if (freed) return
-                if (e?.name !== "AbortError") console.log(e)
-            } finally {
-                if (freed) return
-                aborts.delete(a)
-            }
-        }
-        
-        async function send_out(stuff) {
-            if (!is_external_link) return
-            if (freed) return
-
-            console.log(`send_out ${url} ${JSON.stringify(stuff, null, 4).slice(0, 1000)}`)
-
-            var r = await my_fetch({ method: "PUT", ...stuff })
-            if (freed) return
-
-            // the server has acknowledged this version,
-            // so add it to the fork point
-            if (r.ok) self.update_fork_point(stuff.version[0], stuff.parents)
-
-            // if we're not authorized,
-            if (r.status == 401 || r.status == 403) {
-                // and it's one of our versions (a local edit),
-                if (self.peer === braid_text.decode_version(stuff.version[0])[0]) {
-                    // then revert it
-                    console.log(`access denied: reverting local edits`)
-                    unsync_url(url)
-                    sync_url(url)
-                }
-            }
-        }
-
         await within_fiber(fullpath, async () => {
             if (freed) return
             var fullpath = await get_fullpath()
@@ -774,6 +725,55 @@ async function sync_url(url) {
                 }
             }
             return frontier.sort()
+        }
+
+        async function my_fetch(params) {
+            if (freed) return
+            try {
+                var a = new AbortController()
+                aborts.add(a)
+                return await braid_fetch(url, {
+                    signal: a.signal,
+                    headers: {
+                        "Merge-Type": "dt",
+                        "Content-Type": 'text/plain',
+                        ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
+                    },
+                    retry: { retryRes: r => r.status !== 401 && r.status !== 403 },
+                    ...params
+                })
+            } catch (e) {
+                if (freed) return
+                if (e?.name !== "AbortError") console.log(e)
+            } finally {
+                if (freed) return
+                aborts.delete(a)
+            }
+        }
+        
+        async function send_out(stuff) {
+            if (!is_external_link) return
+            if (freed) return
+
+            console.log(`send_out ${url} ${JSON.stringify(stuff, null, 4).slice(0, 1000)}`)
+
+            var r = await my_fetch({ method: "PUT", ...stuff })
+            if (freed) return
+
+            // the server has acknowledged this version,
+            // so add it to the fork point
+            if (r.ok) self.update_fork_point(stuff.version[0], stuff.parents)
+
+            // if we're not authorized,
+            if (r.status == 401 || r.status == 403) {
+                // and it's one of our versions (a local edit),
+                if (self.peer === braid_text.decode_version(stuff.version[0])[0]) {
+                    // then revert it
+                    console.log(`access denied: reverting local edits`)
+                    unsync_url(url)
+                    sync_url(url)
+                }
+            }
         }
 
         async function find_fork_point() {
