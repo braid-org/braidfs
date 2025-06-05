@@ -325,8 +325,8 @@ async function scan_files() {
     while (scan_files.do_again) {
         scan_files.do_again = false
         var timestamp = new Date().toLocaleTimeString(
-            'en-US', {minute: '2-digit', second: '2-digit', hour12: false}
-        ).slice(0,5)
+            'en-US', {minute: '2-digit', second: '2-digit', hour: '2-digit'}
+        )
         console.log(`scan files.. `, timestamp)
         if (await f(sync_base))
             on_watcher_miss(`scanner picked up a change that the watcher should have gotten`, false)
