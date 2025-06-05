@@ -13,7 +13,8 @@ var trash = `${braidfs_config_dir}/trash`
 var temp_folder = `${braidfs_config_dir}/temp`
 
 var config = null,
-    watcher_misses = 0
+    watcher_misses = 0,
+    reconnect_rate_limiter = new ReconnectRateLimiter()
 
 if (require('fs').existsSync(sync_base)) {
     try {
@@ -732,12 +733,14 @@ async function sync_url(url) {
         async function connect() {
             if (freed) return
             if (last_connect_timer) return
+            console.log(`connecting to ${url}`)
 
             var closed = false
             var prev_disconnect = self.disconnect
             self.disconnect = async () => {
                 if (closed) return
                 closed = true
+                reconnect_rate_limiter.on_diss(url)
                 for (var a of aborts) a.abort()
                 aborts.clear()
                 if (braid_text_get_options) await braid_text.forget(url, braid_text_get_options)
@@ -755,112 +758,110 @@ async function sync_url(url) {
                 console.log(`reconnecting in ${waitTime}s: ${url} after error: ${e}`)
                 last_connect_timer = setTimeout(async () => {
                     await p
+                    await reconnect_rate_limiter.get_turn(url)
                     last_connect_timer = null
                     connect()
                 }, waitTime * 1000)
                 waitTime = Math.min(waitTime + 1, 3)
             }
 
-            var initial_connect_done
-            var initial_connect_promise = new Promise(done => initial_connect_done = done)
+            try {
+                var initial_connect_done
+                var initial_connect_promise = new Promise(done => initial_connect_done = done)
 
-            async function my_fetch(params) {
-                if (freed || closed) return
-                try {
-                    var a = new AbortController()
-                    aborts.add(a)
-                    return await braid_fetch(url, {
-                        signal: a.signal,
-                        headers: {
-                            "Merge-Type": "dt",
-                            "Content-Type": 'text/plain',
-                            ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
-                        },
-                        retry: { retryRes: r => r.status !== 401 && r.status !== 403 },
-                        ...params
-                    })
-                } catch (e) {
+                async function my_fetch(params) {
                     if (freed || closed) return
-                    if (e?.name !== "AbortError") console.log(e)
-                } finally {
-                    if (freed || closed) return
-                    aborts.delete(a)
-                }
-            }
-            
-            async function send_out(stuff) {
-                if (freed || closed) return
-
-                console.log(`send_out ${url} ${JSON.stringify(stuff, null, 4).slice(0, 1000)}`)
-
-                var r = await my_fetch({ method: "PUT", ...stuff })
-                if (freed || closed) return
-
-                // the server has acknowledged this version,
-                // so add it to the fork point
-                if (r.ok) self.update_fork_point(stuff.version[0], stuff.parents)
-
-                // if we're not authorized,
-                if (r.status == 401 || r.status == 403) {
-                    // and it's one of our versions (a local edit),
-                    if (self.peer === braid_text.decode_version(stuff.version[0])[0]) {
-                        // then revert it
-                        console.log(`access denied: reverting local edits`)
-                        unsync_url(url)
-                        sync_url(url)
+                    try {
+                        var a = new AbortController()
+                        aborts.add(a)
+                        return await braid_fetch(url, {
+                            signal: a.signal,
+                            headers: {
+                                "Merge-Type": "dt",
+                                "Content-Type": 'text/plain',
+                                ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
+                            },
+                            ...params
+                        })
+                    } catch (e) {
+                        if (freed || closed) return
+                        aborts.delete(a)
+                        throw e
                     }
                 }
-            }
+                
+                async function send_out(stuff) {
+                    if (freed || closed) return
 
-            async function find_fork_point() {
+                    console.log(`send_out ${url} ${JSON.stringify(stuff, null, 4).slice(0, 1000)}`)
+
+                    var r = await my_fetch({ method: "PUT", ...stuff,
+                        retry: { retryRes: r => r.status !== 401 && r.status !== 403 }})
+                    if (freed || closed) return
+
+                    // the server has acknowledged this version,
+                    // so add it to the fork point
+                    if (r.ok) self.update_fork_point(stuff.version[0], stuff.parents)
+
+                    // if we're not authorized,
+                    if (r.status == 401 || r.status == 403) {
+                        // and it's one of our versions (a local edit),
+                        if (self.peer === braid_text.decode_version(stuff.version[0])[0]) {
+                            // then revert it
+                            console.log(`access denied: reverting local edits`)
+                            unsync_url(url)
+                            sync_url(url)
+                        }
+                    }
+                }
+
+                async function find_fork_point() {
+                    if (freed || closed) return
+                    console.log(`[find_fork_point] url: ${url}`)
+
+                    // see if remote has the fork point
+                    if (self.fork_point) {
+                        var r = await my_fetch({ method: "HEAD", version: self.fork_point })
+                        if (freed || closed) return
+                        if (r.ok) return console.log(`[find_fork_point] it has our latest fork point, hooray!`)
+                    }
+
+                    // otherwise let's binary search for new fork point..
+                    var bytes = resource.doc.toBytes()
+                    var [_, events, __] = braid_text.dt_parse([...bytes])
+                    events = events.map(x => x.join('-'))
+
+                    var min = -1
+                    var max = events.length
+                    self.fork_point = []
+                    while (min + 1 < max) {
+                        var i = Math.floor((min + max)/2)
+                        var version = [events[i]]
+
+                        console.log(`min=${min}, max=${max}, i=${i}, version=${version}`)
+
+                        var st = Date.now()
+                        var r = await my_fetch({ method: "HEAD", version })
+                        if (freed || closed) return
+                        console.log(`fetched in ${Date.now() - st}`)
+
+                        if (r.ok) {
+                            min = i
+                            self.fork_point = version
+                        } else max = i
+                    }
+                    console.log(`[find_fork_point] settled on: ${JSON.stringify(self.fork_point)}`)
+                    self.signal_file_needs_writing(true)
+                }
+
+                await find_fork_point()
                 if (freed || closed) return
-                console.log(`[find_fork_point] url: ${url}`)
 
-                // see if remote has the fork point
-                if (self.fork_point) {
-                    var r = await my_fetch({ method: "HEAD", version: self.fork_point })
-                    if (freed || closed) return
-                    if (r.ok) return console.log(`[find_fork_point] it has our latest fork point, hooray!`)
-                }
+                await send_new_stuff()
+                if (freed || closed) return
 
-                // otherwise let's binary search for new fork point..
-                var bytes = resource.doc.toBytes()
-                var [_, events, __] = braid_text.dt_parse([...bytes])
-                events = events.map(x => x.join('-'))
-
-                var min = -1
-                var max = events.length
-                self.fork_point = []
-                while (min + 1 < max) {
-                    var i = Math.floor((min + max)/2)
-                    var version = [events[i]]
-
-                    console.log(`min=${min}, max=${max}, i=${i}, version=${version}`)
-
-                    var st = Date.now()
-                    var r = await my_fetch({ method: "HEAD", version })
-                    if (freed || closed) return
-                    console.log(`fetched in ${Date.now() - st}`)
-
-                    if (r.ok) {
-                        min = i
-                        self.fork_point = version
-                    } else max = i
-                }
-                console.log(`[find_fork_point] settled on: ${JSON.stringify(self.fork_point)}`)
-                self.signal_file_needs_writing(true)
-            }
-
-            await find_fork_point()
-            if (freed || closed) return
-
-            await send_new_stuff()
-            if (freed || closed) return
-
-            console.log(`connecting to ${url}`)
-            let a = new AbortController()
-            aborts.add(a)
-            try {
+                let a = new AbortController()
+                aborts.add(a)
                 var res = await braid_fetch(url, {
                     signal: a.signal,
                     headers: {
@@ -873,106 +874,108 @@ async function sync_url(url) {
                     parents: self.fork_point,
                     peer: self.peer
                 })
-            } catch (e) { return retry(e) }
-            if (freed || closed) return
-
-            if (res.status < 200 || res.status >= 300) return retry(new Error(`unexpected status: ${res.status}`))
-
-            if (res.status !== 209)
-                return log_error(`Can't sync ${url} -- got bad response ${res.status} from server (expected 209)`)
-
-            console.log(`connected to ${url}`)
-            console.log(`  editable = ${res.headers.get('editable')}`)
-
-            self.file_read_only = res.headers.get('editable') === 'false'
-            self.signal_file_needs_writing()
-            
-            initial_connect_done()
-            res.subscribe(async update => {
-                if (freed || closed) return
-                console.log(`got external update about ${url}`)
-
-                if (update.body) update.body = update.body_text
-                if (update.patches) for (let p of update.patches) p.content = p.content_text
-
-                // console.log(`update: ${JSON.stringify(update, null, 4)}`)
-                if (update.version.length === 0) return
-                if (update.version.length !== 1) throw 'unexpected'
-
-                await wait_on(braid_text.put(url, { ...update, peer: self.peer, merge_type: 'dt' }))
                 if (freed || closed) return
 
-                // the server is giving us this version,
-                // so it must have it,
-                // so let's add it to our fork point
-                self.update_fork_point(update.version[0], update.parents)
+                if (res.status < 200 || res.status >= 300) return retry(new Error(`unexpected status: ${res.status}`))
 
+                if (res.status !== 209)
+                    return log_error(`Can't sync ${url} -- got bad response ${res.status} from server (expected 209)`)
+
+                console.log(`connected to ${url}`)
+                console.log(`  editable = ${res.headers.get('editable')}`)
+
+                reconnect_rate_limiter.on_conn(url)
+
+                self.file_read_only = res.headers.get('editable') === 'false'
                 self.signal_file_needs_writing()
-            }, retry)
+                
+                initial_connect_done()
+                res.subscribe(async update => {
+                    if (freed || closed) return
+                    console.log(`got external update about ${url}`)
 
-            // send it stuff we have but it doesn't't
-            async function send_new_stuff() {
-                if (freed || closed) return
-                var q = []
-                var in_flight = new Map()
-                var max_in_flight = 10
-                var send_pump_lock = 0
+                    if (update.body) update.body = update.body_text
+                    if (update.patches) for (let p of update.patches) p.content = p.content_text
 
-                async function send_pump() {
-                    send_pump_lock++
-                    if (send_pump_lock > 1) return
-                    try {
-                        if (freed || closed) return
-                        if (in_flight.size >= max_in_flight) return
-                        if (!q.length) {
-                            var frontier = self.fork_point
-                            for (var u of in_flight.values())
-                                frontier = extend_frontier(frontier, u.version[0], u.parents)
+                    // console.log(`update: ${JSON.stringify(update, null, 4)}`)
+                    if (update.version.length === 0) return
+                    if (update.version.length !== 1) throw 'unexpected'
 
-                            var options = {
-                                parents: frontier,
-                                merge_type: 'dt',
-                                peer: self.peer,
-                                subscribe: u => u.version.length && q.push(u)
+                    await wait_on(braid_text.put(url, { ...update, peer: self.peer, merge_type: 'dt' }))
+                    if (freed || closed) return
+
+                    // the server is giving us this version,
+                    // so it must have it,
+                    // so let's add it to our fork point
+                    self.update_fork_point(update.version[0], update.parents)
+
+                    self.signal_file_needs_writing()
+                }, retry)
+
+                // send it stuff we have but it doesn't't
+                async function send_new_stuff() {
+                    if (freed || closed) return
+                    var q = []
+                    var in_flight = new Map()
+                    var max_in_flight = 10
+                    var send_pump_lock = 0
+
+                    async function send_pump() {
+                        send_pump_lock++
+                        if (send_pump_lock > 1) return
+                        try {
+                            if (freed || closed) return
+                            if (in_flight.size >= max_in_flight) return
+                            if (!q.length) {
+                                var frontier = self.fork_point
+                                for (var u of in_flight.values())
+                                    frontier = extend_frontier(frontier, u.version[0], u.parents)
+
+                                var options = {
+                                    parents: frontier,
+                                    merge_type: 'dt',
+                                    peer: self.peer,
+                                    subscribe: u => u.version.length && q.push(u)
+                                }
+                                await braid_text.get(url, options)
+                                await braid_text.forget(url, options)
                             }
-                            await braid_text.get(url, options)
-                            await braid_text.forget(url, options)
+                            while (q.length && in_flight.size < max_in_flight) {
+                                let u = q.shift()
+                                in_flight.set(u.version[0], u);
+                                (async () => {
+                                    await initial_connect_promise
+                                    if (freed || closed) return
+                                    await send_out({...u, peer: self.peer})
+                                    if (freed || closed) return
+                                    in_flight.delete(u.version[0])
+                                    setTimeout(send_pump, 0)
+                                })()
+                            }
+                        } finally {
+                            var retry = send_pump_lock > 1
+                            send_pump_lock = 0
+                            if (retry) setTimeout(send_pump, 0)
                         }
-                        while (q.length && in_flight.size < max_in_flight) {
-                            let u = q.shift()
-                            in_flight.set(u.version[0], u);
-                            (async () => {
-                                await initial_connect_promise
-                                if (freed || closed) return
-                                await send_out({...u, peer: self.peer})
-                                if (freed || closed) return
-                                in_flight.delete(u.version[0])
-                                setTimeout(send_pump, 0)
-                            })()
-                        }
-                    } finally {
-                        var retry = send_pump_lock > 1
-                        send_pump_lock = 0
-                        if (retry) setTimeout(send_pump, 0)
                     }
-                }
 
-                var initial_stuff = true
-                await wait_on(braid_text.get(url, braid_text_get_options = {
-                    parents: self.fork_point,
-                    merge_type: 'dt',
-                    peer: self.peer,
-                    subscribe: async (u) => {
-                        if (freed || closed) return
-                        if (u.version.length) {
-                            self.signal_file_needs_writing()
-                            if (initial_stuff || in_flight.size < max_in_flight) q.push(u)
-                            send_pump()
-                        }
-                    },
-                }))
-                initial_stuff = false
-            }
+                    var initial_stuff = true
+                    await wait_on(braid_text.get(url, braid_text_get_options = {
+                        parents: self.fork_point,
+                        merge_type: 'dt',
+                        peer: self.peer,
+                        subscribe: async (u) => {
+                            if (freed || closed) return
+                            if (u.version.length) {
+                                self.signal_file_needs_writing()
+                                if (initial_stuff || in_flight.size < max_in_flight) q.push(u)
+                                send_pump()
+                            }
+                        },
+                    }))
+                    initial_stuff = false
+                }
+            } catch (e) { return retry(e) }
         }
 
         // for config and errors file, listen for web changes
@@ -1005,6 +1008,86 @@ async function ensure_path(path) {
             }
         })
     }
+}
+
+function ReconnectRateLimiter(wait_time = 1000) {
+    var self = {}
+
+    self.conns = new Map() // Map<host, Set<url>>
+    self.host_to_q = new Map() // Map<host, Array<resolve>>
+    self.qs = [] // Array<{host, turns: Array<resolve>, last_turn}>
+    self.last_turn = 0
+    self.timer = null
+
+    function process() {
+        if (self.timer) clearTimeout(self.timer)
+        self.timer = null
+
+        if (!self.qs.length) return
+        var now = Date.now()
+        var my_last_turn = () => self.conns.size === 0 ? self.last_turn : self.qs[0].last_turn
+
+        while (self.qs.length && now >= my_last_turn() + wait_time) {
+            var x = self.qs.shift()
+            if (!x.turns.length) {
+                self.host_to_q.delete(x.host)
+                continue
+            }
+
+            x.turns.shift()()
+            x.last_turn = self.last_turn = now
+            self.qs.push(x)
+        }
+
+        if (self.qs.length)
+            self.timer = setTimeout(process, Math.max(0,
+                my_last_turn() + wait_time - now))
+    }
+
+    self.get_turn = async (url) => {
+        var host = new URL(url).host
+        
+        // If host has connections, give turn immediately
+        if (self.conns.has(host)) return
+
+        console.log(`throttling reconn to ${url} (no conns yet to ${self.conns.size ? host : 'anything'})`)
+        
+        if (!self.host_to_q.has(host)) {
+            var turns = []
+            self.host_to_q.set(host, turns)
+            self.qs.unshift({host, turns, last_turn: 0})
+        }
+        var p = new Promise(resolve => self.host_to_q.get(host).push(resolve))
+        process()
+        await p
+    }
+
+    self.on_conn = url => {
+        var host = new URL(url).host
+        if (!self.conns.has(host))
+            self.conns.set(host, new Set())
+        self.conns.get(host).add(url)
+        
+        // If there are turns waiting for this host, resolve them all immediately
+        var turns = self.host_to_q.get(host)
+        if (turns) {
+            for (var turn of turns) turn()
+            turns.splice(0, turns.length)
+        }
+        
+        process()
+    }
+
+    self.on_diss = url => {
+        var host = new URL(url).host
+        var urls = self.conns.get(host)
+        if (urls) {
+            urls.delete(url)
+            if (urls.size === 0) self.conns.delete(host)
+        }
+    }
+
+    return self
 }
 
 ////////////////////////////////
