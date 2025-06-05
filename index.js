@@ -886,7 +886,8 @@ async function sync_url(url) {
                 if (res.status !== 209)
                     return log_error(`Can't sync ${url} -- got bad response ${res.status} from server (expected 209)`)
 
-                console.log(`connected to ${url}, with editable=${res.headers.get('editable')}`)
+                console.log(`connected to ${url}`.padEnd(70, ' ')
+                            + `(editable: ${res.headers.get('editable')})`)
 
                 reconnect_rate_limiter.on_conn(url)
 
