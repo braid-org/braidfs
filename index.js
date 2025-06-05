@@ -14,7 +14,8 @@ var temp_folder = `${braidfs_config_dir}/temp`
 
 var config = null,
     watcher_misses = 0,
-    reconnect_rate_limiter = new ReconnectRateLimiter()
+    reconnect_rate_limiter = new ReconnectRateLimiter(() =>
+        config?.reconnect_delay_ms ?? 3000)
 
 if (require('fs').existsSync(sync_base)) {
     try {
@@ -40,6 +41,7 @@ if (require('fs').existsSync(sync_base)) {
         cookies: { 'example.com': 'secret_pass' },
         port: 45678,
         scan_interval_ms: 1000 * 20,
+        reconnect_delay_ms: 1000 * 3
     }
     require('fs').mkdirSync(braidfs_config_dir, { recursive: true })
     require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
@@ -1010,7 +1012,7 @@ async function ensure_path(path) {
     }
 }
 
-function ReconnectRateLimiter(wait_time = 1000) {
+function ReconnectRateLimiter(get_wait_time) {
     var self = {}
 
     self.conns = new Map() // Map<host, Set<url>>
@@ -1027,7 +1029,7 @@ function ReconnectRateLimiter(wait_time = 1000) {
         var now = Date.now()
         var my_last_turn = () => self.conns.size === 0 ? self.last_turn : self.qs[0].last_turn
 
-        while (self.qs.length && now >= my_last_turn() + wait_time) {
+        while (self.qs.length && now >= my_last_turn() + get_wait_time()) {
             var x = self.qs.shift()
             if (!x.turns.length) {
                 self.host_to_q.delete(x.host)
@@ -1041,7 +1043,7 @@ function ReconnectRateLimiter(wait_time = 1000) {
 
         if (self.qs.length)
             self.timer = setTimeout(process, Math.max(0,
-                my_last_turn() + wait_time - now))
+                my_last_turn() + get_wait_time() - now))
     }
 
     self.get_turn = async (url) => {
