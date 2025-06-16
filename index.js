@@ -326,7 +326,10 @@ async function scan_files() {
     scan_files.running = true
     while (scan_files.do_again) {
         scan_files.do_again = false
-        console.log(`scan files..`)
+        var timestamp = new Date().toLocaleTimeString(
+            'en-US', {minute: '2-digit', second: '2-digit', hour: '2-digit'}
+        )
+        console.log(`scan files.. `, timestamp)
         if (await f(sync_base))
             on_watcher_miss(`scanner picked up a change that the watcher should have gotten`, false)
     }
@@ -827,7 +830,7 @@ async function sync_url(url) {
                     if (self.fork_point) {
                         var r = await my_fetch({ method: "HEAD", version: self.fork_point })
                         if (freed || closed) return
-                        if (r.ok) return console.log(`[find_fork_point] it has our latest fork point, hooray!`)
+                        if (r.ok) return console.log(`[find_fork_point] "${url.split('/').pop()}" has our latest fork point, hooray!`)
                     }
 
                     // otherwise let's binary search for new fork point..
@@ -885,8 +888,8 @@ async function sync_url(url) {
                 if (res.status !== 209)
                     return log_error(`Can't sync ${url} -- got bad response ${res.status} from server (expected 209)`)
 
-                console.log(`connected to ${url}`)
-                console.log(`  editable = ${res.headers.get('editable')}`)
+                console.log(`connected to ${url}`.padEnd(70, ' ')
+                            + `(editable: ${res.headers.get('editable')})`)
 
                 reconnect_rate_limiter.on_conn(url)
 
