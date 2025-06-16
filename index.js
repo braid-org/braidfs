@@ -4,6 +4,8 @@ var { diff_main } = require(`${__dirname}/diff.js`),
     braid_text = require("braid-text"),
     braid_fetch = require('braid-http').fetch
 
+braid_fetch.set_fetch(fetch_http2)
+
 var sync_base = `${require('os').homedir()}/http`,
     braidfs_config_dir = `${sync_base}/.braidfs`,
     braidfs_config_file = `${braidfs_config_dir}/config`,
@@ -1090,6 +1092,98 @@ function ReconnectRateLimiter(get_wait_time) {
     }
 
     return self
+}
+
+async function fetch_http2(url, options = {}) {
+    if (!fetch_http2.sessions) {
+        fetch_http2.sessions = new Map()
+        process.on("exit", () => fetch_http2.sessions.forEach(s => s.close()))
+    }
+
+    var u = new URL(url)
+    if (u.protocol !== "https:") return fetch(url, options)
+
+    try {
+        var session = fetch_http2.sessions.get(u.origin)
+        if (!session || session.closed) {
+            session = require("http2").connect(u.origin, {
+                rejectUnauthorized: options.rejectUnauthorized !== false,
+            })
+            session.on("error", () => fetch_http2.sessions.delete(u.origin))
+            session.on("close", () => fetch_http2.sessions.delete(u.origin))
+            fetch_http2.sessions.set(u.origin, session)
+        }
+
+        return await new Promise((resolve, reject) => {
+            var stream = session.request({
+                ":method": options.method || "GET",
+                ":path": u.pathname + u.search,
+                ":scheme": "https",
+                ":authority": u.host,
+                ...Object.fromEntries(options.headers || []),
+            })
+
+            options.signal?.addEventListener("abort",
+                () => stream.destroy(new Error("Request aborted")),
+                { once: true })
+
+            stream.on("response", headers => {
+                var status = +headers[":status"]
+                resolve({
+                    ok: status >= 200 && status < 300,
+                    status,
+                    statusText: "",
+                    headers: new Headers(Object.fromEntries(
+                        Object.entries(headers).filter(([k]) =>
+                            typeof k === "string" && !k.startsWith(":")))),
+                    body: new ReadableStream({
+                        start(ctrl) {
+                            stream.on("data", x => ctrl.enqueue(new Uint8Array(x)))
+                            stream.on("end", () => ctrl.close())
+                            stream.on("error", err => ctrl.error(err))
+                        },
+                        cancel() { stream.destroy() },
+                    }),
+                    bodyUsed: false,
+                    async _consumeBody() {
+                        this.bodyUsed = true
+                        var chunks = []
+                        var reader = this.body.getReader()
+
+                        while (true) {
+                            var { done, value } = await reader.read()
+                            if (done) break
+                            chunks.push(value)
+                        }
+                        return Buffer.concat(chunks.map((c) => (Buffer.isBuffer(c) ? c : Buffer.from(c))))
+                    },
+                    async text() { return (await this._consumeBody()).toString() },
+                    async json() { return JSON.parse(await this.text()) },
+                    async arrayBuffer() {
+                        var b = await this._consumeBody()
+                        return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)
+                    },
+                })
+            })
+
+            stream.on("error", reject)
+
+            var body = options.body
+            if (!body) return stream.end()
+
+            if (body instanceof Uint8Array || Buffer.isBuffer(body)) stream.end(body)
+            else if (body instanceof Blob) body.arrayBuffer()
+                .then((b) => stream.end(Buffer.from(b)))
+                .catch(reject)
+            else stream.end(typeof body === "string" ? body : JSON.stringify(body))
+        })
+    } catch (err) {
+        if (err.code?.includes("HTTP2") || err.message?.includes("HTTP/2")) {
+            console.log("HTTP/2 failed, falling back to HTTP/1.1:", err.message)
+            return fetch(url, options)
+        }
+        throw err
+    }
 }
 
 ////////////////////////////////
