@@ -693,26 +693,26 @@ async function sync_url(url) {
             file_loop_pump_lock--
         }
 
-        self.update_fork_point = (event, parents) => {
-            self.fork_point = extend_frontier(self.fork_point, event, parents)
+        self.update_fork_point = (version, parents) => {
+            self.fork_point = extend_frontier(self.fork_point, version, parents)
             self.signal_file_needs_writing(true)
         }
 
-        function extend_frontier(frontier, event, parents) {
+        function extend_frontier(frontier, version, parents) {
             // special case:
             // if current frontier has all parents,
             //    then we can just remove those
-            //    and add event
+            //    and add version
             var frontier_set = new Set(frontier)
             if (parents.length &&
                 parents.every(p => frontier_set.has(p))) {
                 parents.forEach(p => frontier_set.delete(p))
-                frontier_set.add(event)
+                for (var event of version) frontier_set.add(event)
                 frontier = [...frontier_set.values()]
             } else {
                 // full-proof approach..
                 var looking_for = frontier_set
-                looking_for.add(event)
+                for (var event of version) looking_for.add(event)
 
                 frontier = []
                 var shadow = new Set()
@@ -782,13 +782,14 @@ async function sync_url(url) {
                         var a = new AbortController()
                         aborts.add(a)
                         return await braid_fetch(url, {
+                            ...params,
                             signal: a.signal,
                             headers: {
+                                ...params.headers,
                                 "Merge-Type": "dt",
                                 "Content-Type": 'text/plain',
                                 ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
                             },
-                            ...params
                         })
                     } catch (e) {
                         if (freed || closed) return
@@ -808,7 +809,7 @@ async function sync_url(url) {
 
                     // the server has acknowledged this version,
                     // so add it to the fork point
-                    if (r.ok) self.update_fork_point(stuff.version[0], stuff.parents)
+                    if (r.ok) self.update_fork_point(stuff.version, stuff.parents)
 
                     // if we're not authorized,
                     if (r.status == 401 || r.status == 403) {
@@ -867,7 +868,52 @@ async function sync_url(url) {
                 await send_new_stuff()
                 if (freed || closed) return
 
-                let a = new AbortController()
+                // attempt to download the initial stuff in one go,
+                // using transfer-encoding dt
+                //
+                // first check for support..
+                //
+                var res = await my_fetch({
+                    method: 'HEAD',
+                    headers: { 'accept-transfer-encoding': 'dt' },
+                })
+                if (freed || closed) return
+
+                if (res.ok && res.headers.get('x-transfer-encoding') === 'dt') {
+                    var res = await my_fetch({
+                        headers: { 'accept-transfer-encoding': 'dt' },
+                        parents: self.fork_point,
+                    })
+                    if (freed || closed) return
+                    console.log(`got external updates about ${url}`)
+
+                    // manually apply the dt bytes..
+                    // ..code bits taken from braid-text put..
+                    var bytes = new Uint8Array(await res.arrayBuffer())
+                    if (freed || closed) return
+
+                    var start_i = 1 + resource.doc.getLocalVersion().reduce((a, b) => Math.max(a, b), -1)
+                    resource.doc.mergeBytes(bytes)
+
+                    // update resource.actor_seqs
+                    var end_i = resource.doc.getLocalVersion().reduce((a, b) => Math.max(a, b), -1)
+                    for (var i = start_i; i <= end_i; i++) {
+                        var v = resource.doc.localToRemoteVersion([i])[0]
+                        if (!resource.actor_seqs[v[0]]) resource.actor_seqs[v[0]] = new braid_text.RangeSet()
+                        resource.actor_seqs[v[0]].add_range(v[1], v[1])
+                    }
+
+                    resource.val = resource.doc.get()
+                    resource.need_defrag = true
+                    await resource.db_delta(bytes)
+                    if (freed || closed) return
+
+                    // ..do the things we do when getting subscribe updates..
+                    self.update_fork_point(JSON.parse(`[${res.headers.get('current-version')}]`), self.fork_point)
+                    self.signal_file_needs_writing()
+                }
+
+                var a = new AbortController()
                 aborts.add(a)
                 var res = await braid_fetch(url, {
                     signal: a.signal,
@@ -914,7 +960,7 @@ async function sync_url(url) {
                     // the server is giving us this version,
                     // so it must have it,
                     // so let's add it to our fork point
-                    self.update_fork_point(update.version[0], update.parents)
+                    self.update_fork_point(update.version, update.parents)
 
                     self.signal_file_needs_writing()
                 }, retry)
@@ -936,7 +982,7 @@ async function sync_url(url) {
                             if (!q.length) {
                                 var frontier = self.fork_point
                                 for (var u of in_flight.values())
-                                    frontier = extend_frontier(frontier, u.version[0], u.parents)
+                                    frontier = extend_frontier(frontier, u.version, u.parents)
 
                                 var options = {
                                     parents: frontier,
