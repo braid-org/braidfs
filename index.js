@@ -829,7 +829,12 @@ async function sync_url(url) {
 
                     // see if remote has the fork point
                     if (self.fork_point) {
-                        var r = await my_fetch({ method: "HEAD", version: self.fork_point })
+                        var r = await my_fetch({
+                            method: "HEAD",
+                            version: self.fork_point,
+                            retry: { retryRes: r =>
+                                r.status !== 309 && r.status !== 500 }
+                        })
                         if (freed || closed) return
                         if (r.ok) return console.log(`[find_fork_point] "${url.split('/').pop()}" has our latest fork point, hooray!`)
                     }
@@ -849,7 +854,12 @@ async function sync_url(url) {
                         console.log(`min=${min}, max=${max}, i=${i}, version=${version}`)
 
                         var st = Date.now()
-                        var r = await my_fetch({ method: "HEAD", version })
+                        var r = await my_fetch({
+                            method: "HEAD",
+                            version,
+                            retry: { retryRes: r =>
+                                r.status !== 309 && r.status !== 500 }
+                        })
                         if (freed || closed) return
                         console.log(`fetched in ${Date.now() - st}`)
 
