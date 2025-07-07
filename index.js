@@ -396,12 +396,9 @@ async function sync_url(url) {
             return p
         }
         var get_fullpath = async () => {
-            if (freed) return
             var p = fullpath
-            while (await wait_on(is_dir(p))) {
-                if (freed) return
+            while (await is_dir(p))
                 p = require("path").join(p, 'index')
-            }
             return p
         }
         if (!unsync_url.cache) unsync_url.cache = {}
@@ -412,12 +409,21 @@ async function sync_url(url) {
 
             delete braid_text.cache[url]
             for (let f of await braid_text.get_files_for_key(url)) {
-                console.log(`trying to delete ${f}`)
-                try { await require('fs').promises.unlink(f) } catch (e) {}
+                try {
+                    console.log(`trying to delete: ${f}`)
+                    await require('fs').promises.unlink(f)
+                } catch (e) {}
             }
 
-            try { await require('fs').promises.unlink(meta_path) } catch (e) {}
-            try { await require('fs').promises.unlink(await get_fullpath()) } catch (e) {}
+            try {
+                console.log(`trying to delete: ${meta_path}`)
+                await require('fs').promises.unlink(meta_path)
+            } catch (e) {}
+            try {
+                var fp = await get_fullpath()
+                console.log(`trying to delete: ${fp}`)
+                await require('fs').promises.unlink(fp)
+            } catch (e) {}
         }
         sync_url.cache[path] = sync_url.chain = sync_url.chain.then(init)
     }
