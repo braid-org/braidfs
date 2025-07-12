@@ -884,57 +884,13 @@ async function sync_url(url) {
                 await send_new_stuff()
                 if (freed || closed) return
 
-                // attempt to download the initial stuff in one go,
-                // using transfer-encoding dt
-                //
-                // first check for support..
-                //
-                var res = await my_fetch({
-                    method: 'HEAD',
-                    headers: { 'accept-transfer-encoding': 'dt' },
-                })
-                if (freed || closed) return
-
-                if (res.ok && res.headers.get('x-transfer-encoding') === 'dt') {
-                    var res = await my_fetch({
-                        headers: { 'accept-transfer-encoding': 'dt' },
-                        parents: self.fork_point,
-                    })
-                    if (freed || closed) return
-                    console.log(`got external updates about ${url}`)
-
-                    // manually apply the dt bytes..
-                    // ..code bits taken from braid-text put..
-                    var bytes = new Uint8Array(await res.arrayBuffer())
-                    if (freed || closed) return
-
-                    var start_i = 1 + resource.doc.getLocalVersion().reduce((a, b) => Math.max(a, b), -1)
-                    resource.doc.mergeBytes(bytes)
-
-                    // update resource.actor_seqs
-                    var end_i = resource.doc.getLocalVersion().reduce((a, b) => Math.max(a, b), -1)
-                    for (var i = start_i; i <= end_i; i++) {
-                        var v = resource.doc.localToRemoteVersion([i])[0]
-                        if (!resource.actor_seqs[v[0]]) resource.actor_seqs[v[0]] = new braid_text.RangeSet()
-                        resource.actor_seqs[v[0]].add_range(v[1], v[1])
-                    }
-
-                    resource.val = resource.doc.get()
-                    resource.need_defrag = true
-                    await resource.db_delta(bytes)
-                    if (freed || closed) return
-
-                    // ..do the things we do when getting subscribe updates..
-                    self.update_fork_point(JSON.parse(`[${res.headers.get('current-version')}]`), self.fork_point)
-                    self.signal_file_needs_writing()
-                }
-
                 var a = new AbortController()
                 aborts.add(a)
                 var res = await braid_fetch(url, {
                     signal: a.signal,
                     headers: {
                         "Merge-Type": "dt",
+                        'accept-encoding': 'updates(dt)',
                         Accept: 'text/plain',
                         ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname]),
                     },
@@ -961,6 +917,35 @@ async function sync_url(url) {
                 initial_connect_done()
                 res.subscribe(async update => {
                     if (freed || closed) return
+
+                    if (!update.status) {
+                        console.log(`got initial update about ${url}`)
+
+                        // manually apply the dt bytes..
+                        // ..code bits taken from braid-text put..
+                        var bytes = update.body
+
+                        var start_i = 1 + resource.doc.getLocalVersion().reduce((a, b) => Math.max(a, b), -1)
+                        resource.doc.mergeBytes(bytes)
+
+                        // update resource.actor_seqs
+                        var end_i = resource.doc.getLocalVersion().reduce((a, b) => Math.max(a, b), -1)
+                        for (var i = start_i; i <= end_i; i++) {
+                            var v = resource.doc.localToRemoteVersion([i])[0]
+                            if (!resource.actor_seqs[v[0]]) resource.actor_seqs[v[0]] = new braid_text.RangeSet()
+                            resource.actor_seqs[v[0]].add_range(v[1], v[1])
+                        }
+
+                        resource.val = resource.doc.get()
+                        resource.need_defrag = true
+                        await resource.db_delta(bytes)
+                        if (freed || closed) return
+
+                        self.update_fork_point(JSON.parse(`[${res.headers.get('current-version')}]`), self.fork_point)
+                        self.signal_file_needs_writing()
+                        return
+                    }
+
                     console.log(`got external update about ${url}`)
 
                     if (update.body) update.body = update.body_text
