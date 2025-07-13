@@ -162,11 +162,34 @@ Can be:
 (defun braidfs-sync-file (&optional filename)
   (interactive)
   (setq filename (or filename (buffer-file-name)))
-  (let* ((default-directory (expand-file-name "~/")))
+  (let* ((default-directory (expand-file-name "~/"))
+         (original-buffer (current-buffer))
+         (start-time (current-time))
+         (timer-info (list nil)))  ; Use a list to store timer reference
     (shell-command (concat "braidfs sync "
                            (replace-regexp-in-string "^/home/[^/]+/http/"
                                                      "https://"
-                                                     filename)))))
+                                                     filename)
+                           " >/dev/null 2>&1"))
+    ;; We expect the file to appear soon, so check for it
+    (setcar timer-info
+            (run-with-timer
+             0.1 0.1  ; Start after 0.1s, repeat every 0.1s
+             (lambda (info start filename orig-buf)
+               (let ((timer (car info)))
+                 (cond
+                  ;; Check if 5 seconds have elapsed
+                  ((> (float-time (time-subtract (current-time) start)) 5.0)
+                   (cancel-timer timer))
+                  ;; Check if file exists and has content
+                  ((and (file-exists-p filename)
+                        (> (file-attribute-size (file-attributes filename)) 0))
+                   (cancel-timer timer)
+                   ;; Revert the original buffer
+                   (when (buffer-live-p orig-buf)
+                     (with-current-buffer orig-buf
+                       (revert-buffer t t t)))))))
+             timer-info start-time filename original-buffer))))
 
 (defun braidfs-unsync-file (&optional filename)
   (interactive)
