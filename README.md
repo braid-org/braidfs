@@ -180,5 +180,3 @@ setting, which requires restarting the daemon after a change.
 - Doesn't update your editor's text with remote updates until you save
   - It's not hard to make it live-update, though, so that you can see your edits integrated with others' before you save.
   - Contact us if you'd like to help!  It would be a fun project!
-
-Test
