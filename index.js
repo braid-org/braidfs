@@ -297,6 +297,8 @@ async function watch_files() {
         on('unlink', x => chokidar_handler(x, 'unlink'))
 
     async function chokidar_handler(fullpath, event) {
+        console.log(`file event "${event}": ${fullpath}`)
+
         // Make sure the path is within sync_base..
         if (!fullpath.startsWith(sync_base))
             return on_watcher_miss(`path ${fullpath} outside ${sync_base}`)
@@ -308,8 +310,6 @@ async function watch_files() {
         // Make sure the path is to a file, and not a directory
         if (event != 'unlink' && (await require('fs').promises.stat(fullpath)).isDirectory())
             return on_watcher_miss(`expected file, got: ${fullpath}`)
-
-        console.log(`file event: ${path}, event: ${event}`)
 
         var sync = await sync_url.cache[normalize_url(path)]
 
@@ -330,6 +330,16 @@ async function scan_files() {
             'en-US', {minute: '2-digit', second: '2-digit', hour: '2-digit'}
         )
         console.log(`scan files.. `, timestamp)
+
+        // this can be removed in the future;
+        // some debug information about chokidar:
+        var internal = 'unknown'
+        for (var k in watch_files?.watcher ?? {}) {
+            if (k.startsWith('_fsEvents')) internal = "_fsEvents"
+            if (k.startsWith('_nodeFs')) internal = "_nodeFs"
+        }
+        console.log(`chokidar info: FSEvents=${watch_files?.watcher?.options?.useFsEvents}, polling=${watch_files?.watcher?.options?.usePolling}, internal=${internal}`)
+
         if (await f(sync_base))
             on_watcher_miss(`scanner picked up a change that the watcher should have gotten`, false)
     }
