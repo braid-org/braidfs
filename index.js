@@ -291,8 +291,10 @@ async function watch_files() {
     await w?.close()
 
     console.log('watch files..')
-    watch_files.watcher = require('chokidar').watch(sync_base).
-        on('add', x => chokidar_handler(x, 'add')).
+    watch_files.watcher = require('chokidar').watch(sync_base, {
+        useFsEvents: true,
+        usePolling: false,
+    }). on('add', x => chokidar_handler(x, 'add')).
         on('change', x => chokidar_handler(x, 'change')).
         on('unlink', x => chokidar_handler(x, 'unlink'))
 
