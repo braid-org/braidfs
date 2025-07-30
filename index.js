@@ -71,10 +71,12 @@ if (argv.length === 1 && argv[0].match(/^(run|serve)$/)) {
         for (let i = 0; i < argv.length; i += 2) {
             var sync = argv[i] === 'sync',
                 url = argv[i + 1]
-            if (!url.match(/^https?:\/\//)) {
-                if (url.startsWith('/')) url = require('path').relative(sync_base, url)
-                url = `https://${url}`
+
+            if (!is_well_formed_absolute_url(url)) {
+                console.log(`malformed url: ${url}`)
+                return
             }
+
             console.log(`${sync ? '' : 'un'}subscribing ${sync ? 'to' : 'from'} ${url}`)
             try {
                 var res = await braid_fetch(`http://localhost:${config.port}/.braidfs/config`, {
@@ -1386,4 +1388,15 @@ async function file_exists(fullpath) {
 
 function sha256(x) {
     return require('crypto').createHash('sha256').update(x).digest('base64')
+}
+
+function is_well_formed_absolute_url(urlString) {
+    if (!urlString || typeof urlString !== 'string') return
+    if (urlString.match(/\s/)) return
+    try {
+        var url = new URL(urlString)
+        if (url.hostname.includes('%')) return
+        if (!url.hostname) return
+        return urlString.match(/^https?:\/\//)
+    } catch (error) {}
 }
