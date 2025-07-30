@@ -299,7 +299,7 @@ async function watch_files() {
         on('unlink', x => chokidar_handler(x, 'unlink'))
 
     async function chokidar_handler(fullpath, event) {
-        console.log(`file event "${event}": ${fullpath}`)
+        // console.log(`file event "${event}": ${fullpath}`)
 
         // Make sure the path is within sync_base..
         if (!fullpath.startsWith(sync_base))
