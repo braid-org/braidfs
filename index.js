@@ -333,14 +333,8 @@ async function scan_files() {
         )
         console.log(`scan files.. `, timestamp)
 
-        // this can be removed in the future;
-        // some debug information about chokidar:
-        var internal = 'unknown'
-        for (var k in watch_files?.watcher ?? {}) {
-            if (k.startsWith('_fsEvents')) internal = "_fsEvents"
-            if (k.startsWith('_nodeFs')) internal = "_nodeFs"
-        }
-        console.log(`chokidar info: FSEvents=${watch_files?.watcher?.options?.useFsEvents}, polling=${watch_files?.watcher?.options?.usePolling}, internal=${internal}`)
+        if (watch_files?.watcher?.options?.usePolling)
+            console.log('Warning: BAD PERFORMANCE!!  Filesystem using polling!')
 
         if (await f(sync_base))
             on_watcher_miss(`scanner picked up a change that the watcher should have gotten`, false)
