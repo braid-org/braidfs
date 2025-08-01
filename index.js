@@ -771,15 +771,17 @@ async function sync_url(url) {
 
             await prev_disconnect?.()
             if (freed || closed) return
+            
+            await reconnect_rate_limiter.get_turn(url)
+            if (freed || closed) return
 
-            async function retry(e) {
+            function retry(e) {
                 if (freed || closed) return
                 var p = self.disconnect()
 
                 console.log(`reconnecting in ${waitTime}s: ${url} after error: ${e}`)
                 last_connect_timer = setTimeout(async () => {
                     await p
-                    await reconnect_rate_limiter.get_turn(url)
                     last_connect_timer = null
                     connect()
                 }, waitTime * 1000)
@@ -805,11 +807,7 @@ async function sync_url(url) {
                                 ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
                             },
                         })
-                    } catch (e) {
-                        if (freed || closed) return
-                        aborts.delete(a)
-                        throw e
-                    }
+                    } catch (e) { retry(e) }
                 }
                 
                 async function send_out(stuff) {
@@ -817,8 +815,7 @@ async function sync_url(url) {
 
                     console.log(`send_out ${url} ${JSON.stringify(stuff, null, 4).slice(0, 1000)}`)
 
-                    var r = await my_fetch({ method: "PUT", ...stuff,
-                        retry: { retryRes: r => r.status !== 401 && r.status !== 403 }})
+                    var r = await my_fetch({ method: "PUT", ...stuff })
                     if (freed || closed) return
 
                     // the server has acknowledged this version,
@@ -826,7 +823,7 @@ async function sync_url(url) {
                     if (r.ok) self.update_fork_point(stuff.version, stuff.parents)
 
                     // if we're not authorized,
-                    if (r.status == 401 || r.status == 403) {
+                    else if (r.status == 401 || r.status == 403) {
                         // and it's one of our versions (a local edit),
                         if (self.peer === braid_text.decode_version(stuff.version[0])[0]) {
                             // then revert it
@@ -835,6 +832,9 @@ async function sync_url(url) {
                             sync_url(url)
                         }
                     }
+
+                    // on other errors, restart the connection
+                    else retry(new Error(`unexpected PUT status: ${r.status}`))
                 }
 
                 async function find_fork_point() {
@@ -845,11 +845,12 @@ async function sync_url(url) {
                     if (self.fork_point) {
                         var r = await my_fetch({
                             method: "HEAD",
-                            version: self.fork_point,
-                            retry: { retryRes: r =>
-                                r.status !== 309 && r.status !== 500 }
+                            version: self.fork_point
                         })
                         if (freed || closed) return
+
+                        if (!r.ok && r.status !== 309 && r.status !== 500) return retry(new Error(`unexpected HEAD status: ${r.status}`))
+
                         if (r.ok) return console.log(`[find_fork_point] "${url.split('/').pop()}" has our latest fork point, hooray!`)
                     }
 
@@ -868,14 +869,11 @@ async function sync_url(url) {
                         console.log(`min=${min}, max=${max}, i=${i}, version=${version}`)
 
                         var st = Date.now()
-                        var r = await my_fetch({
-                            method: "HEAD",
-                            version,
-                            retry: { retryRes: r =>
-                                r.status !== 309 && r.status !== 500 }
-                        })
+                        var r = await my_fetch({ method: "HEAD", version })
                         if (freed || closed) return
                         console.log(`fetched in ${Date.now() - st}`)
+
+                        if (!r.ok && r.status !== 309 && r.status !== 500) return retry(new Error(`unexpected HEAD status: ${r.status}`))
 
                         if (r.ok) {
                             min = i
