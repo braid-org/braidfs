@@ -1040,7 +1040,6 @@ async function sync_url(url) {
 
         // for config and errors file, listen for web changes
         if (!is_external_link) braid_text.get(url, braid_text_get_options = {
-            merge_type: 'dt',
             peer: self.peer,
             subscribe: () => self.signal_file_needs_writing(),
         })
