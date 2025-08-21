@@ -187,7 +187,7 @@ async function main() {
         }
     }).listen(config.port, () => {
         console.log(`daemon started on port ${config.port}`)
-        if (!config.allow_remote_access) console.log('!! only accessible from localhost !!')
+        console.log('!! only accessible from localhost !!')
 
         sync_url('.braidfs/config').then(() => {
             braid_text.get('.braidfs/config', {
