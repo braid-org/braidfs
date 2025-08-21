@@ -114,7 +114,7 @@ async function main() {
     process.on("uncaughtException", (x) => console.log(`uncaughtException: ${x.stack}`))
     require('http').createServer(async (req, res) => {
         try {
-            console.log(`${req.method} ${req.url}`)
+            // console.log(`${req.method} ${req.url}`)
 
             if (req.url === '/favicon.ico') return
 
@@ -159,6 +159,8 @@ async function main() {
                 var patches = diff(parent_text, text)
 
                 if (patches.length) {
+                    console.log(`plugin edited ${path}`)
+
                     sync.local_edit_counter += patches_to_code_points(patches, parent_text)
                     var version = [sync.peer + "-" + (sync.local_edit_counter - 1)]
                     await braid_text.put(sync.url, { version, parents, patches, merge_type: 'dt' })
@@ -231,7 +233,7 @@ async function main() {
         })
         sync_url('.braidfs/errors')
 
-        console.log({ sync: config.sync })
+        // console.log({ sync: config.sync })
         for (let x of Object.entries(config.sync)) if (x[1]) sync_url(x[0])
 
         watch_files()
@@ -292,7 +294,7 @@ async function watch_files() {
     watch_files.watcher = 42
     await w?.close()
 
-    console.log('watch files..')
+    // console.log('watch files..')
     watch_files.watcher = require('chokidar').watch(sync_base, {
         useFsEvents: true,
         usePolling: false,
@@ -438,7 +440,7 @@ async function sync_url(url) {
     async function init() {
         if (freed) return
 
-        console.log(`sync_url: ${url}`)
+        // console.log(`sync_url: ${url}`)
 
         var resource = await braid_text.get_resource(url)
         if (freed) return
@@ -590,7 +592,7 @@ async function sync_url(url) {
                     }
 
                     if (file_needs_reading) {
-                        console.log(`reading file: ${fullpath}`)
+                        // console.log(`reading file: ${fullpath}`)
 
                         file_needs_reading = false
 
@@ -598,7 +600,7 @@ async function sync_url(url) {
                         if (!(await wait_on(file_exists(fullpath)))) {
                             if (freed) return
 
-                            console.log(`file not found, creating: ${fullpath}`)
+                            // console.log(`file not found, creating: ${fullpath}`)
                             
                             file_needs_writing = true
                             file_last_version = []
@@ -620,7 +622,7 @@ async function sync_url(url) {
 
                         var patches = diff(self.file_last_text, text)
                         if (patches.length) {
-                            console.log(`found changes in: ${fullpath}`)
+                            console.log(`file change in ${path}`)
 
                             // convert from js-indicies to code-points
                             self.local_edit_counter += patches_to_code_points(patches, self.file_last_text)
@@ -641,12 +643,12 @@ async function sync_url(url) {
                         } else {
                             add_to_version_cache(text, file_last_version)
 
-                            console.log(`no changes found in: ${fullpath}`)
+                            // console.log(`no changes found in: ${fullpath}`)
                             if (stat_eq(stat, self.file_last_stat)) {
                                 if (Date.now() > (self.file_ignore_until ?? 0))
                                     on_watcher_miss(`expected change to: ${fullpath}`)
-                                else console.log(`no changes expected`)
-                            } else console.log('found change in file stat')
+                                // else console.log(`no changes expected`)
+                            } // else console.log('found change in file stat')
                         }
                         self.file_last_stat = stat
                         self.file_ignore_until = Date.now() + 1000
@@ -671,7 +673,7 @@ async function sync_url(url) {
                                 continue
                             }
 
-                            console.log(`writing file ${fullpath}`)
+                            // console.log(`writing file ${fullpath}`)
 
                             add_to_version_cache(body, version)
 
@@ -754,7 +756,7 @@ async function sync_url(url) {
         async function connect() {
             if (freed) return
             if (last_connect_timer) return
-            console.log(`connecting to ${url}`)
+            // console.log(`connecting to ${url}`)
 
             var closed = false
             var prev_disconnect = self.disconnect
@@ -813,7 +815,8 @@ async function sync_url(url) {
                 async function send_out(stuff) {
                     if (freed || closed) return
 
-                    console.log(`send_out ${url} ${JSON.stringify(stuff, null, 4).slice(0, 1000)}`)
+                    console.log(`sending to ${url}`)
+                    // console.log(JSON.stringify(stuff, null, 4).slice(0, 1000))
 
                     var r = await my_fetch({ method: "PUT", ...stuff })
                     if (freed || closed) return
@@ -839,7 +842,7 @@ async function sync_url(url) {
 
                 async function find_fork_point() {
                     if (freed || closed) return
-                    console.log(`[find_fork_point] url: ${url}`)
+                    // console.log(`[find_fork_point] url: ${url}`)
 
                     // see if remote has the fork point
                     if (self.fork_point) {
@@ -851,7 +854,10 @@ async function sync_url(url) {
 
                         if (!r.ok && r.status !== 309 && r.status !== 500) return retry(new Error(`unexpected HEAD status: ${r.status}`))
 
-                        if (r.ok) return console.log(`[find_fork_point] "${url.split('/').pop()}" has our latest fork point, hooray!`)
+                        if (r.ok) {
+                            // console.log(`[find_fork_point] "${url.split('/').pop()}" has our latest fork point, hooray!`)
+                            return
+                        }
                     }
 
                     // otherwise let's binary search for new fork point..
@@ -866,12 +872,12 @@ async function sync_url(url) {
                         var i = Math.floor((min + max)/2)
                         var version = [events[i]]
 
-                        console.log(`min=${min}, max=${max}, i=${i}, version=${version}`)
+                        // console.log(`min=${min}, max=${max}, i=${i}, version=${version}`)
 
-                        var st = Date.now()
+                        //var st = Date.now()
                         var r = await my_fetch({ method: "HEAD", version })
                         if (freed || closed) return
-                        console.log(`fetched in ${Date.now() - st}`)
+                        //console.log(`fetched in ${Date.now() - st}`)
 
                         if (!r.ok && r.status !== 309 && r.status !== 500) return retry(new Error(`unexpected HEAD status: ${r.status}`))
 
@@ -880,7 +886,7 @@ async function sync_url(url) {
                             self.fork_point = version
                         } else max = i
                     }
-                    console.log(`[find_fork_point] settled on: ${JSON.stringify(self.fork_point)}`)
+                    // console.log(`[find_fork_point] settled on: ${JSON.stringify(self.fork_point)}`)
                     self.signal_file_needs_writing(true)
                 }
 
@@ -912,8 +918,7 @@ async function sync_url(url) {
                 if (res.status !== 209)
                     return log_error(`Can't sync ${url} -- got bad response ${res.status} from server (expected 209)`)
 
-                console.log(`connected to ${url}`.padEnd(70, ' ')
-                            + `(editable: ${res.headers.get('editable')})`)
+                console.log(`connected to ${url}${res.headers.get('editable') !== 'true' ? ' (readonly)' : ''}`)
 
                 reconnect_rate_limiter.on_conn(url)
 
@@ -925,7 +930,7 @@ async function sync_url(url) {
                     if (freed || closed) return
 
                     if (!update.status) {
-                        console.log(`got initial update about ${url}`)
+                        // console.log(`got initial update about ${url}`)
 
                         // manually apply the dt bytes..
                         // ..code bits taken from braid-text put..
@@ -952,7 +957,7 @@ async function sync_url(url) {
                         return
                     }
 
-                    console.log(`got external update about ${url}`)
+                    console.log(`update from ${url}`)
 
                     if (update.body) update.body = update.body_text
                     if (update.patches) for (let p of update.patches) p.content = p.content_text
@@ -1109,7 +1114,7 @@ function ReconnectRateLimiter(get_wait_time) {
         // If host has connections, give turn immediately
         if (self.conns.has(host)) return
 
-        console.log(`throttling reconn to ${url} (no conns yet to ${self.conns.size ? host : 'anything'})`)
+        // console.log(`throttling reconn to ${url} (no conns yet to ${self.conns.size ? host : 'anything'})`)
         
         if (!self.host_to_q.has(host)) {
             var turns = []
@@ -1234,7 +1239,7 @@ async function fetch_http2(url, options = {}) {
         })
     } catch (err) {
         if (err.code?.includes("HTTP2") || err.message?.includes("HTTP/2")) {
-            console.log("HTTP/2 failed, falling back to HTTP/1.1:", err.message)
+            // console.log("HTTP/2 failed, falling back to HTTP/1.1:", err.message)
             return fetch(url, options)
         }
         throw err
@@ -1348,7 +1353,7 @@ async function is_read_only(fullpath) {
 }
 
 async function set_read_only(fullpath, read_only) {
-    console.log(`set_read_only(${fullpath}, ${read_only})`)
+    // console.log(`set_read_only(${fullpath}, ${read_only})`)
 
     if (require('os').platform() === "win32") {
         await new Promise((resolve, reject) => {
