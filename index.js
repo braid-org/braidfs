@@ -1052,7 +1052,7 @@ async function sync_url(url) {
                     if (freed || closed) return
 
                     console.log(`sending to ${url}`)
-                    // console.log(JSON.stringify(stuff, null, 4).slice(0, 1000))
+                    console.log(JSON.stringify(stuff, null, 4).slice(0, 1000))
 
                     var r = await my_fetch({ method: "PUT", ...stuff })
                     if (freed || closed) return
