@@ -484,11 +484,10 @@ async function sync_url(url) {
             // an early-timestamp file on server if missing. Then compare mtimes
             // to decide whether to upload or download.
             try {
-                // Subscribe (and also allow non-subscribe servers). Include peer header
                 var subscribeRes = await braid_fetch(url, {
                     method: 'GET',
                     subscribe: true,
-                    headers: { 'peer': self.peer }
+                    headers: { 'peer': self.peer } // Needed for not downloading the file just uploaded to the server
                 })
 
                 if (subscribeRes?.ok) {
@@ -497,63 +496,54 @@ async function sync_url(url) {
                     // Read local mtime (or 0 if missing)
                     var local_mtime_ms = 0
                     if (local_exists) {
-                        try { local_mtime_ms = Math.floor(Number((await wait_on(require('fs').promises.stat(fullpath))).mtimeMs)) } catch (e) {}
+                        try {
+                            const statResult = await wait_on(require('fs').promises.stat(fullpath));
+                            local_mtime_ms = Math.round(Number(statResult.mtimeMs));
+                        } catch (e) {}
                     }
 
                     // Server advertises last-modified header
-                    var server_mtime_header = subscribeRes.headers.get('last-modified-ms') || subscribeRes.headers.get('last-modified')
+                    var server_mtime_header = subscribeRes.headers.get('last-modified-ms')
                     var server_mtime_ms = 0
                     if (server_mtime_header) {
-                        var num = Number(server_mtime_header)
-                        if (!isNaN(num)) server_mtime_ms = Math.floor(num)
-                        else server_mtime_ms = Math.floor(Date.parse(server_mtime_header) || 0)
+                        server_mtime_ms = Math.round(Number(server_mtime_header))
                     }
 
                     // If local exists and is newer than server, upload it immediately
                     if (local_exists && local_mtime_ms > server_mtime_ms) {
-                        console.log(local_mtime_ms)
-                        console.log(server_mtime_ms)
+                        // console.log(local_mtime_ms)
+                        // console.log(server_mtime_ms)
                         try {
                             var fileData = await wait_on(require('fs').promises.readFile(fullpath))
                             var putRes = await braid_fetch(url, {
                                 method: 'PUT',
                                 body: fileData,
-                                headers: { 'Content-Type': 'application/octet-stream', 'peer': self.peer, 'X-Timestamp': Math.floor(local_mtime_ms).toString() }
+                                headers: { 'Content-Type': 'application/octet-stream', 'peer': self.peer, 'X-Timestamp': local_mtime_ms }
                             })
                             if (putRes.ok) console.log(`Uploaded newer local file to server: ${url}`)
                         } catch (e) { console.log(`Failed to upload newer local file: ${e}`) }
                     }
 
-                    // Subscribe to updates to pull server content when it changes or when local is missing (GET with subscription will update with empty file)
-
-                    // the problem is that put is always slightly delayed so it causes get to override next run and the another put the next run
-                    // we want server timestamp to authoritative, so it makes sense for PUT request timestamp to be from server
-                    // but aren't we out of sync (for the sender) if we don't put the same thing as local timestamp?
-                    
                     subscribeRes.subscribe(async (update) => {
                         if (freed) return
                         if (!update?.body) return
                         // console.log(update)
-                        // ignore first responce if we already have the up-to-date file
-                        // to avoid stats update
-                        var update_mtime_header = update.headers?.get('last-modified-ms') || update.headers?.get('last-modified')
-                        var update_timestamp = update_mtime_header ? (update.headers?.get('last-modified-ms') != null ? Math.floor(Number(update_mtime_header)) : Math.floor(Date.parse(update_mtime_header))) : (update.version ? Math.floor(Number(update.version[0])) : Date.now())
+                        // ignore first responce if we already have the up-to-date file, although not needed.
+                        var update_timestamp = Math.round(Number(update.version[0]));
                         if (isNaN(update_timestamp)) update_timestamp = Date.now()
                         if (local_exists && local_mtime_ms < update_timestamp) {
                             try {
-                                console.log(Math.floor(local_mtime_ms))
-                                console.log(Math.floor(update_timestamp)) // 1757370763849
-                                // console.log(Math.floor(local_mtime_ms - update_timestamp))
+                                // console.log(Math.round(local_mtime_ms))
+                                // console.log(Math.round(update_timestamp))
                                 var writePath = await get_fullpath()
                                 await wait_on(ensure_path(require("path").dirname(writePath)))
                                 await wait_on(require('fs').promises.writeFile(writePath, update.body))
 
                                 // Set the file timestamp to the update timestamp
-                                var mtime = Math.floor(update_timestamp) / 1000
+                                var mtime = update_timestamp / 1000
                                 await wait_on(require('fs').promises.utimes(writePath, mtime, mtime))
-                                console.log(Math.floor(Number((await wait_on(require('fs').promises.stat(writePath))).mtimeMs))) // 1757370763848 <- why different than above
-                                // wait it always changes 1757370763849 -> 1757370763848 no matter what
-
+                                // const statResult = await wait_on(require('fs').promises.stat(writePath));
+                                // console.log(Math.round(Number(statResult.mtimeMs))) // checking for writing vs written issues
 
                                 var st = await wait_on(require('fs').promises.stat(writePath, { bigint: true }))
                                 self.file_last_stat = st
@@ -620,9 +610,14 @@ async function sync_url(url) {
                         if (freed) return
 
                         if (!stat_eq(stat, self.file_last_stat)) {
-                            console.log(`binary file change detected in ${path}`)
-                            console.log(stat)
-                            console.log(self.file_last_stat)
+                            // Importent logs for debugging precision issues
+                            // console.log(`binary file change detected in ${path}`)
+                            // console.log(`stat.mtimeMs: ${stat.mtimeMs}`)
+                            // console.log(`self.file_last_stat.mtimeMs ${self.file_last_stat.mtimeMs}`)
+                            // console.log(Math.round(Number(stat.mtimeMs)))
+
+                            // The reason we need this is because mtime from bigint stats may have 1ms difference. Unable to use it.
+                            const lower_precision_mtimems = Math.round(Number(await wait_on((await require('fs').promises.stat(writePath)).mtimeMs)));
                             
                             // Upload the changed file to server
                             try {
@@ -630,7 +625,7 @@ async function sync_url(url) {
                                 var response = await braid_fetch(url, {
                                     method: 'PUT',
                                     body: fileData,
-                                    headers: { 'Content-Type': 'application/octet-stream', 'peer': self.peer, 'X-Timestamp': Math.floor(stat.mtimeMs) }
+                                    headers: { 'Content-Type': 'application/octet-stream', 'peer': self.peer, 'X-Timestamp': lower_precision_mtimems }
                                 })
                                 if (response.ok) {
                                     console.log(`Uploaded changed binary file to server: ${url}`)

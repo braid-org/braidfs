@@ -59,9 +59,8 @@ var server = require("http").createServer(braidify(async (req, res) => {
                     const fileData = fs.readFileSync(filename);
                     // Restore original timestamps to prevent mtime changes from file system read operations
                     fs.utimesSync(filename, stat.atime, stat.mtime);
-                    res.setHeader('Last-Modified', new Date(Number(stat.mtimeMs)).toUTCString());
-                    res.setHeader('Last-Modified-Ms', String(Number(stat.mtimeMs)));
-                    res.sendUpdate({ body: fileData, version: [String(Number(stat.mtimeMs))] });
+                    res.setHeader('Last-Modified-Ms', String(Math.round(Number(stat.mtimeMs))));
+                    res.sendUpdate({ body: fileData, version: [String(Math.round(Number(stat.mtimeMs)))] });
                 } else {
                     // File doesn't exist on server, return empty response
                     // It cannot reach this point if request is subscribed to!
@@ -95,13 +94,12 @@ var server = require("http").createServer(braidify(async (req, res) => {
                     fs.writeFileSync(filename, body);
 
                     // Get timestamp from header or use current time
-                    const timestamp = req.headers['x-timestamp'] ? Number(req.headers['x-timestamp']) : Date.now();
-                    console.log(timestamp)
+                    const timestamp = req.headers['x-timestamp'] ? Math.round(Number(req.headers['x-timestamp']) ): Number(Date.now());
+                    // console.log(timestamp)
                     const mtimeSeconds = timestamp / 1000;
                     fs.utimesSync(filename, mtimeSeconds, mtimeSeconds);
-                    console.log(fs.statSync(filename).mtimeMs);
-
-                    console.log(`Binary file written: ${filename}`);
+                    // console.log(fs.statSync(filename).mtimeMs);
+                    // console.log(`Binary file written: ${filename}`);
 
                     const stat = fs.statSync(filename);
 
@@ -110,12 +108,12 @@ var server = require("http").createServer(braidify(async (req, res) => {
                         var [peer, url] = JSON.parse(k);
                         // console.log(req.headers.peer)
                         if (peer !== req.headers.peer && url === req.url) {
-                            subscriptions[k].sendUpdate({ body, version: [String(Number(stat.mtimeMs))] });
+                            subscriptions[k].sendUpdate({ body, version: [String(Math.round(Number(stat.mtimeMs)))] });
                         }
                     }
 
-                    res.setHeader('Last-Modified', new Date(Number(stat.mtimeMs)).toUTCString());
-                    res.setHeader('Last-Modified-Ms', String(Number(stat.mtimeMs)));
+                    res.setHeader('Last-Modified', new Date(Math.round(Number(stat.mtimeMs))).toUTCString());
+                    res.setHeader('Last-Modified-Ms', String(Math.round(Number(stat.mtimeMs))));
                     res.statusCode = 200;
                     res.end();
                 } catch (err) {
@@ -124,7 +122,7 @@ var server = require("http").createServer(braidify(async (req, res) => {
                     res.end("Internal server error");
                 }
             });
-        } // Not needed anymore
+        } // Not needed anymore; might need again for the writer based off fs watcher.
         // else if (req.method === 'HEAD') {
         //     // Handle HEAD request to check if binary file exists
         //     const filename = path.join(__dirname, req.url);
