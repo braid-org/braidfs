@@ -487,7 +487,10 @@ async function sync_url(url) {
                 var subscribeRes = await braid_fetch(url, {
                     method: 'GET',
                     subscribe: true,
-                    headers: { 'peer': self.peer } // Needed for not downloading the file just uploaded to the server
+                    headers: {
+                        'peer': self.peer, // Needed for not downloading the file just uploaded to the server
+                        'X-Local-File-Timestamp': local_mtime_ms > 0 ? String(local_mtime_ms) : '0'
+                    }
                 })
 
                 if (subscribeRes?.ok) {

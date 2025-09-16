@@ -60,7 +60,20 @@ var server = require("http").createServer(braidify(async (req, res) => {
                     // Restore original timestamps to prevent mtime changes from file system read operations
                     fs.utimesSync(filename, stat.atime, stat.mtime);
                     res.setHeader('Last-Modified-Ms', String(Math.round(Number(stat.mtimeMs))));
-                    res.sendUpdate({ body: fileData, version: [String(Math.round(Number(stat.mtimeMs)))] });
+
+                    // Check if client has a local file timestamp that's newer or equal
+                    const localTimestampHeader = req.headers['x-local-file-timestamp'];
+                    const serverTimestamp = Math.round(Number(stat.mtimeMs));
+                    const localTimestamp = localTimestampHeader ? Math.round(Number(localTimestampHeader)) : undefined;
+
+                    if (localTimestamp !== undefined && serverTimestamp <= localTimestamp) {
+                        console.log(`Skipping update for ${req.url}: server timestamp ${serverTimestamp} <= local timestamp ${localTimestamp}`);
+                        // Don't send the file data, just send headers and empty response
+                        res.sendUpdate({ body: Buffer.alloc(0), version: [String(serverTimestamp)] });
+                    } else {
+                        // Send the file data as normal (when no local timestamp header or server is newer)
+                        res.sendUpdate({ body: fileData, version: [String(Math.round(Number(stat.mtimeMs)))] });
+                    }
                 } else {
                     // File doesn't exist on server, return empty response
                     // It cannot reach this point if request is subscribed to!
