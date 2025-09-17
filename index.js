@@ -533,7 +533,7 @@ async function sync_url(url) {
                         // console.log(update)
                         // ignore first responce if we already have the up-to-date file, although not needed.
                         var update_timestamp = Math.round(Number(update.version[0]));
-                        if (isNaN(update_timestamp)) update_timestamp = Date.now()
+                        // if (isNaN(update_timestamp)) update_timestamp = Date.now() // should throw error if can't read server timestamp
                         if (local_exists && local_mtime_ms < update_timestamp) {
                             try {
                                 // console.log(Math.round(local_mtime_ms))
@@ -571,19 +571,6 @@ async function sync_url(url) {
             }
         })
 
-        // The main issue we are going into is stats not be inited properly! 
-
-        // try {
-        //     var stat = await wait_on(require('fs').promises.stat(fullpath, { bigint: true }))
-        //     if (freed) return
-        //     self.file_last_stat = stat
-        // } catch (e) {
-        //     // file may not exist yet; will be handled by file_loop
-        // }
-
-
-        // Set up server subscription handled above
-
         file_loop_pump()
         
         async function file_loop_pump() {
@@ -620,7 +607,7 @@ async function sync_url(url) {
                             // console.log(Math.round(Number(stat.mtimeMs)))
 
                             // The reason we need this is because mtime from bigint stats may have 1ms difference. Unable to use it.
-                            const lower_precision_mtimems = Math.round(Number(await wait_on((await require('fs').promises.stat(writePath)).mtimeMs)));
+                            const lower_precision_mtimems = Math.round(Number(await wait_on((await require('fs').promises.stat(fullpath)).mtimeMs)));
                             
                             // Upload the changed file to server
                             try {
