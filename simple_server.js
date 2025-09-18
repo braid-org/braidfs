@@ -4,6 +4,25 @@ var braid_text = require('braid-text'),
     path = require('path'),
     port = 8888
 
+// Base directory for file storage, similar to index.js
+var storage_base = path.join(__dirname, 'server_files');
+
+// Helper function to normalize URL and create host-specific path
+function get_storage_path(req) {
+    // Get host from request headers, default to localhost if not present
+    const host = req.headers.host || `localhost:${port}`;
+    // Remove protocol and normalize, similar to index.js
+    let normalized_host = host.replace(/^https?:\/\//, '');
+    // Remove any double slashes that might occur
+    normalized_host = normalized_host.replace(/\/+/g, '/');
+    // Ensure path doesn't start with a slash (since we'll join with storage_base)
+    if (normalized_host.startsWith('/')) normalized_host = normalized_host.substring(1);
+    // Combine host and URL for storage path
+    const combined_path = `${normalized_host}${req.url}`;
+    // Remove any double slashes that might result from concatenation
+    return combined_path.replace(/\/+/g, '/');
+}
+
 // Helper function to check if a file is binary based on its extension
 function is_binary(filename) {
     const binaryExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.mp3', '.zip', '.tar', '.rar', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.exe', '.dll', '.so', '.dylib', '.bin', '.iso', '.img', '.bmp', '.tiff', '.svg', '.webp', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.wav', '.flac', '.aac', '.ogg', '.wma', '.7z', '.gz', '.bz2', '.xz'];
@@ -33,7 +52,8 @@ var server = require("http").createServer(braidify(async (req, res) => {
                 res.startSubscription({ onClose: () => delete subscriptions[hash(req)] });
                 subscriptions[hash(req)] = res;
 
-                const filename = path.join(__dirname, req.url);
+                const storage_path = get_storage_path(req);
+                const filename = path.join(storage_base, storage_path);
                 try {
                     const dir = path.dirname(filename);
                     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -51,7 +71,8 @@ var server = require("http").createServer(braidify(async (req, res) => {
             }
 
             // Read binary file and send it in response
-            const filename = path.join(__dirname, req.url);
+            const storage_path = get_storage_path(req);
+            const filename = path.join(storage_base, storage_path);
             try {
                 if (fs.existsSync(filename)) {
                     const stat = fs.statSync(filename);
@@ -94,8 +115,9 @@ var server = require("http").createServer(braidify(async (req, res) => {
             req.on('end', () => {
                 body = Buffer.concat(body);
 
-                const filename = path.join(__dirname, req.url);
-                
+                const storage_path = get_storage_path(req);
+                const filename = path.join(storage_base, storage_path);
+
                 try {
                     // Ensure directory exists
                     const dir = path.dirname(filename);
@@ -156,8 +178,14 @@ var server = require("http").createServer(braidify(async (req, res) => {
     }
 }));
 
+// Ensure storage base directory exists
+if (!fs.existsSync(storage_base)) {
+    fs.mkdirSync(storage_base, { recursive: true });
+}
+
 server.listen(port, () => {
     console.log(`server started on port ${port}`);
+    console.log(`files stored in: ${storage_base}`);
 });
 
 // curl -X PUT --data-binary @image.png http://localhost:8888/image.png
