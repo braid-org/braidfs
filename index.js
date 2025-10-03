@@ -178,7 +178,7 @@ async function main() {
                     })
 
                     res.writeHead(200, { 'Content-Type': 'application/json' })
-                    return res.end(Math.floor(stat.mtimeMs).toString())
+                    return res.end(stat.mtimeMs.toString())
                 } else return res.end('null')
             }
 
@@ -1158,24 +1158,10 @@ async function sync_url(url) {
                     if (!update.status) {
                         // console.log(`got initial update about ${url}`)
 
-                        // manually apply the dt bytes..
-                        // ..code bits taken from braid-text put..
-                        var bytes = update.body
-
-                        var start_i = 1 + resource.doc.getLocalVersion().reduce((a, b) => Math.max(a, b), -1)
-                        resource.doc.mergeBytes(bytes)
-
-                        // update resource.actor_seqs
-                        var end_i = resource.doc.getLocalVersion().reduce((a, b) => Math.max(a, b), -1)
-                        for (var i = start_i; i <= end_i; i++) {
-                            var v = resource.doc.localToRemoteVersion([i])[0]
-                            if (!resource.actor_seqs[v[0]]) resource.actor_seqs[v[0]] = new braid_text.RangeSet()
-                            resource.actor_seqs[v[0]].add_range(v[1], v[1])
-                        }
-
-                        resource.val = resource.doc.get()
-                        resource.need_defrag = true
-                        await resource.db_delta(bytes)
+                        await braid_text.put(resource, {
+                            body: update.body,
+                            transfer_encoding: 'dt'
+                        })
                         if (freed || closed) return
 
                         self.update_fork_point(JSON.parse(`[${res.headers.get('current-version')}]`), self.fork_point)
