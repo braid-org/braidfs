@@ -476,6 +476,20 @@ async function sync_url(url) {
 
             if (!self.peer) self.peer = Math.random().toString(36).slice(2)
 
+            // create file if it doesn't exist
+            var fullpath = await get_fullpath()
+            if (freed) return
+            if (!(await file_exists(fullpath))) {
+                if (freed) return
+                await wait_on(require('fs').promises.writeFile(fullpath, ''))
+                if (freed) return
+                var stat = await require('fs').promises.stat(fullpath, { bigint: true })
+                if (freed) return
+                self.file_mtimeNs_str = '' + stat.mtimeNs
+                self.last_touch = Date.now()
+            }
+            if (freed) return
+
             await save_meta()
         })
         if (freed) return
@@ -531,7 +545,7 @@ async function sync_url(url) {
                     subscribe: true,
                     heartbeats: 120,
                     peer: self.peer,
-                    ...(self.version != null ? {parents: ['' + self.version]} : {})
+                    parents: self.version != null ? ['' + self.version] : []
                 })
                 if (freed || closed) return
 
@@ -540,7 +554,16 @@ async function sync_url(url) {
                 if (res.status !== 209)
                     return log_error(`Can't sync ${url} -- got bad response ${res.status} from server (expected 209)`)
 
-                console.log(`connected to ${url}${res.headers.get('editable') !== 'true' ? ' (readonly)' : ''}`)
+                self.file_read_only = res.headers.get('editable') === 'false'
+
+                await wait_on(within_fiber(url, async () => {
+                    var fullpath = await get_fullpath()
+                    if (freed || closed) return
+
+                    await set_read_only(fullpath, self.file_read_only)
+                }))
+
+                console.log(`connected to ${url}${self.file_read_only ? ' (readonly)' : ''}`)
 
                 reconnect_rate_limiter.on_conn(url)
                 
@@ -559,7 +582,11 @@ async function sync_url(url) {
                         var fullpath = await get_fullpath()
                         if (freed || closed) return
 
+                        await wait_on(set_read_only(fullpath, false))
+                        if (freed || closed) return
                         await wait_on(require('fs').promises.writeFile(fullpath, update.body))
+                        if (freed || closed) return
+                        await wait_on(set_read_only(fullpath, self.file_read_only))
                         if (freed || closed) return
 
                         var stat = await require('fs').promises.stat(fullpath, { bigint: true })
@@ -570,6 +597,55 @@ async function sync_url(url) {
                         await save_meta()
                     })
                 }, retry)
+
+                async function send_file(fullpath) {
+                    var body = await require('fs').promises.readFile(fullpath)
+                    if (freed || closed) return
+
+                    try {
+                        var a = new AbortController()
+                        aborts.add(a)
+                        var r = await braid_fetch(url, {
+                            method: 'PUT',
+                            signal: a.signal,
+                            version: ['' + self.version],
+                            body,
+                            headers: {
+                                ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
+                            },
+                        })
+                        if (freed || closed) return
+
+                        // if we're not authorized,
+                        if (r.status == 401 || r.status == 403) {
+                            // then revert it
+                            console.log(`access denied: reverting local edits`)
+                            unsync_url(url)
+                            sync_url(url)
+                        } else if (!r.ok) {
+                            retry(new Error(`unexpected PUT status: ${r.status}`))
+                        }
+                    } catch (e) { retry(e) }
+                }
+
+                // if what we have now is newer than what the server has,
+                // go ahead and send it
+                await within_fiber(url, async () => {
+                    if (freed || closed) return
+                    var fullpath = await get_fullpath()
+                    if (freed || closed) return
+                    try {
+                        var stat = await require('fs').promises.stat(fullpath, { bigint: true })
+                    } catch (e) { return }
+                    if (freed || closed) return
+
+                    var server_v = JSON.parse(`[${res.headers.get('current-version')}]`)
+                    if (self.version != null &&
+                        '' + stat.mtimeNs === self.file_mtimeNs_str && (
+                        !server_v.length ||
+                        1*server_v[0] < self.version
+                    )) await send_file(fullpath)
+                })
 
                 self.signal_file_needs_reading = () => {
                     within_fiber(url, async () => {
@@ -591,22 +667,7 @@ async function sync_url(url) {
                             self.last_touch = Date.now()
 
                             await save_meta()
-
-                            var body = await require('fs').promises.readFile(fullpath)
-                            if (freed || closed) return
-
-                            var a = new AbortController()
-                            aborts.add(a)
-
-                            await braid_fetch(url, {
-                                method: 'PUT',
-                                signal: a.signal,
-                                version: ['' + self.version],
-                                body,
-                                headers: {
-                                    ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
-                                },
-                            })
+                            await send_file(fullpath)
                         }
                     })
                 }
@@ -1107,12 +1168,12 @@ async function sync_url(url) {
                 if (res.status !== 209)
                     return log_error(`Can't sync ${url} -- got bad response ${res.status} from server (expected 209)`)
 
-                console.log(`connected to ${url}${res.headers.get('editable') !== 'true' ? ' (readonly)' : ''}`)
-
                 reconnect_rate_limiter.on_conn(url)
 
                 self.file_read_only = res.headers.get('editable') === 'false'
                 self.signal_file_needs_writing()
+
+                console.log(`connected to ${url}${self.file_read_only ? ' (readonly)' : ''}`)
                 
                 initial_connect_done()
                 res.subscribe(async update => {
@@ -1528,8 +1589,15 @@ async function set_read_only(fullpath, read_only) {
         })
     } else {
         let mode = (await require('fs').promises.stat(fullpath)).mode
-        if (read_only) mode &= ~0o222
-        else mode |= 0o200
+        
+        // Check if chmod is actually needed
+        if (read_only && (mode & 0o222) === 0) return
+        if (!read_only && (mode & 0o200) !== 0) return
+        
+        // Perform chmod only if necessary
+        if (read_only) mode &= ~0o222  // Remove all write permissions
+        else mode |= 0o200   // Add owner write permission
+        
         await require('fs').promises.chmod(fullpath, mode)
     }
 }
