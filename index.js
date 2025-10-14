@@ -12,8 +12,18 @@ function is_binary(filename) {
 
 braid_fetch.set_fetch(fetch_http2)
 
-var sync_base = `${require('os').homedir()}/http`,
-    braidfs_config_dir = `${sync_base}/.braidfs`,
+var sync_base = `${require('os').homedir()}/http`
+// Check for --sync-base argument (hidden for testing)
+var argv = process.argv.slice(2)
+var sync_base_index = argv.indexOf('--sync-base')
+if (sync_base_index !== -1 && sync_base_index < argv.length - 1) {
+    sync_base = argv[sync_base_index + 1]
+    // Remove the --sync-base and its value from argv
+    argv.splice(sync_base_index, 2)
+    console.log(`[Testing mode] Using sync_base: ${sync_base}`)
+}
+
+var braidfs_config_dir = `${sync_base}/.braidfs`,
     braidfs_config_file = `${braidfs_config_dir}/config`,
     sync_base_meta = `${braidfs_config_dir}/proxy_base_meta`
 braid_text.db_folder = `${braidfs_config_dir}/braid-text-db`
@@ -68,8 +78,7 @@ to_run_in_background = ''
 
 console.log(`braidfs version: ${require(`${__dirname}/package.json`).version}`)
 
-// process command line args
-var argv = process.argv.slice(2)
+// process command line args (argv was already processed above for --sync-base)
 if (argv.length === 1 && argv[0].match(/^(run|serve)$/)) {
     return main()
 } else if (argv.length && argv.length % 2 == 0 && argv.every((x, i) => i % 2 != 0 || x.match(/^(sync|unsync)$/))) {
@@ -172,13 +181,11 @@ async function main() {
                     await braid_text.put(sync.url, { version, parents, patches, merge_type: 'dt' })
 
                     // may be able to do this more efficiently.. we want to make sure we're capturing a file write that is after our version was written.. there may be a way we can avoid calling file_needs_writing here
-                    var stat = await new Promise(done => {
+                    await new Promise(done => {
                         sync.file_written_cbs.push(done)
                         sync.signal_file_needs_writing()
                     })
-
-                    res.writeHead(200, { 'Content-Type': 'application/json' })
-                    return res.end(stat.mtimeMs.toString())
+                    return res.end('')
                 } else return res.end('null')
             }
 
@@ -245,7 +252,7 @@ async function main() {
         watch_files()
         setTimeout(scan_files, 1200)
     }).on('error', e => {
-        if (e.code === 'EADDRINUSE') return console.log(`port ${config.port} is in use`)
+        if (e.code === 'EADDRINUSE') return console.log(`ERROR: port ${config.port} is in use`)
         throw e
     })
 }
@@ -371,7 +378,7 @@ async function scan_files() {
             if (!sync) return await trash_file(fullpath, path)
 
             stat = await require('fs').promises.stat(fullpath, { bigint: true })
-            if (!stat_eq(stat, sync.file_last_stat)) {
+            if ('' + stat.mtimeNs !== sync.file_mtimeNs_str) {
                 console.log(`scan thinks ${path} has changed`)
                 sync.signal_file_needs_reading()
                 return true
@@ -452,202 +459,159 @@ async function sync_url(url) {
 
         console.log(`init_binary_sync: ${url}`)
 
-        self.peer = Math.random().toString(36).slice(2)
-        self.file_last_stat = null
-        self.file_read_only = null
-        var file_needs_reading = true,
-            file_needs_writing = null,
-            file_loop_pump_lock = 0
-        // self.file_written_cbs = [] // not needed
-
-        self.signal_file_needs_reading = () => {
-            if (freed) return
-            file_needs_reading = true
-            file_loop_pump()
+        async function save_meta() {
+            await require('fs').promises.writeFile(meta_path, JSON.stringify({
+                peer: self.peer,
+                version: self.version,
+                file_mtimeNs_str: self.file_mtimeNs_str
+            }))
         }
 
-        self.signal_file_needs_writing = () => {
-            if (freed) return
-            file_needs_writing = true
-            file_loop_pump()
-        }
-
-        await within_fiber(fullpath, async () => {
-            if (freed) return
-            var fullpath = await get_fullpath()
-            if (freed) return
-
-            // Determine if file exists locally
-            var local_exists = await wait_on(require('fs').promises.access(fullpath).then(() => 1, () => 0))
-
-            // If the file exists locally, subscribe first; this will also create
-            // an early-timestamp file on server if missing. Then compare mtimes
-            // to decide whether to upload or download.
+        await within_fiber(url, async () => {
             try {
-                var subscribeRes = await braid_fetch(url, {
-                    method: 'GET',
-                    subscribe: true,
+                Object.assign(self, JSON.parse(
+                    await require('fs').promises.readFile(meta_path, 'utf8')))
+            } catch (e) {}
+            if (freed) return
+
+            if (!self.peer) self.peer = Math.random().toString(36).slice(2)
+
+            await save_meta()
+        })
+        if (freed) return
+
+        var waitTime = 1
+        var last_connect_timer = null
+
+        self.signal_file_needs_reading = () => {}
+
+        connect()
+        async function connect() {
+            if (freed) return
+            if (last_connect_timer) return
+
+            var closed = false
+            var prev_disconnect = self.disconnect
+            self.disconnect = async () => {
+                if (closed) return
+                closed = true
+                reconnect_rate_limiter.on_diss(url)
+                for (var a of aborts) a.abort()
+                aborts.clear()
+            }
+            self.reconnect = connect
+
+            await prev_disconnect?.()
+            if (freed || closed) return
+            
+            await reconnect_rate_limiter.get_turn(url)
+            if (freed || closed) return
+
+            function retry(e) {
+                if (freed || closed) return
+                var p = self.disconnect()
+
+                console.log(`reconnecting in ${waitTime}s: ${url} after error: ${e}`)
+                last_connect_timer = setTimeout(async () => {
+                    await p
+                    last_connect_timer = null
+                    connect()
+                }, waitTime * 1000)
+                waitTime = Math.min(waitTime + 1, 3)
+            }
+
+            try {
+                var a = new AbortController()
+                aborts.add(a)
+                var res = await braid_fetch(url, {
+                    signal: a.signal,
                     headers: {
-                        'peer': self.peer, // Needed for not downloading the file just uploaded to the server
-                        'X-Local-File-Timestamp': local_mtime_ms > 0 ? String(local_mtime_ms) : '0'
-                    }
+                        ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname]),
+                    },
+                    subscribe: true,
+                    heartbeats: 120,
+                    peer: self.peer,
+                    ...(self.version != null ? {parents: ['' + self.version]} : {})
                 })
+                if (freed || closed) return
 
-                if (subscribeRes?.ok) {
-                    self.server_subscription = subscribeRes
+                if (res.status < 200 || res.status >= 300) return retry(new Error(`unexpected status: ${res.status}`))
 
-                    // Read local mtime (or 0 if missing)
-                    var local_mtime_ms = 0
-                    if (local_exists) {
+                if (res.status !== 209)
+                    return log_error(`Can't sync ${url} -- got bad response ${res.status} from server (expected 209)`)
+
+                console.log(`connected to ${url}${res.headers.get('editable') !== 'true' ? ' (readonly)' : ''}`)
+
+                reconnect_rate_limiter.on_conn(url)
+                
+                res.subscribe(async update => {
+                    if (freed || closed) return
+                    if (update.version.length === 0) return
+                    if (update.version.length !== 1) throw 'unexpected'
+                    var version = 1*update.version[0]
+                    if (!update.body) return
+
+                    if (self.version != null &&
+                        version <= self.version) return
+                    self.version = version
+
+                    await within_fiber(url, async () => {
+                        var fullpath = await get_fullpath()
+                        if (freed || closed) return
+
+                        await wait_on(require('fs').promises.writeFile(fullpath, update.body))
+                        if (freed || closed) return
+
+                        var stat = await require('fs').promises.stat(fullpath, { bigint: true })
+                        if (freed || closed) return
+                        self.file_mtimeNs_str = '' + stat.mtimeNs
+                        self.last_touch = Date.now()
+
+                        await save_meta()
+                    })
+                }, retry)
+
+                self.signal_file_needs_reading = () => {
+                    within_fiber(url, async () => {
+                        if (freed || closed) return
+
+                        var fullpath = await get_fullpath()
+                        if (freed || closed) return
+
                         try {
-                            const statResult = await wait_on(require('fs').promises.stat(fullpath));
-                            local_mtime_ms = Math.round(Number(statResult.mtimeMs));
-                        } catch (e) {}
-                    }
+                            var stat = await require('fs').promises.stat(fullpath, { bigint: true })
+                        } catch (e) { return }
+                        if (freed || closed) return
 
-                    // Server advertises last-modified header
-                    var server_mtime_header = subscribeRes.headers.get('last-modified-ms')
-                    var server_mtime_ms = 0
-                    if (server_mtime_header) {
-                        server_mtime_ms = Math.round(Number(server_mtime_header))
-                    }
+                        if ('' + stat.mtimeNs !== self.file_mtimeNs_str) {
+                            self.version = Math.max((self.version || 0) + 1,
+                                Math.round(Number(stat.mtimeNs) / 1000000))
 
-                    // If local exists and is newer than server, upload it immediately
-                    if (local_exists && local_mtime_ms > server_mtime_ms) {
-                        // console.log(local_mtime_ms)
-                        // console.log(server_mtime_ms)
-                        try {
-                            var fileData = await wait_on(require('fs').promises.readFile(fullpath))
-                            var putRes = await braid_fetch(url, {
+                            self.file_mtimeNs_str = '' + stat.mtimeNs
+                            self.last_touch = Date.now()
+
+                            await save_meta()
+
+                            var body = await require('fs').promises.readFile(fullpath)
+                            if (freed || closed) return
+
+                            var a = new AbortController()
+                            aborts.add(a)
+
+                            await braid_fetch(url, {
                                 method: 'PUT',
-                                body: fileData,
-                                headers: { 'Content-Type': 'application/octet-stream', 'peer': self.peer, 'X-Timestamp': local_mtime_ms }
+                                signal: a.signal,
+                                version: ['' + self.version],
+                                body,
+                                headers: {
+                                    ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
+                                },
                             })
-                            if (putRes.ok) console.log(`Uploaded newer local file to server: ${url}`)
-                        } catch (e) { console.log(`Failed to upload newer local file: ${e}`) }
-                    }
-
-                    subscribeRes.subscribe(async (update) => {
-                        if (freed) return
-                        if (!update?.body) return
-                        // console.log(update)
-                        // ignore first responce if we already have the up-to-date file, although not needed.
-                        var update_timestamp = Math.round(Number(update.version[0]));
-                        // if (isNaN(update_timestamp)) update_timestamp = Date.now() // should throw error if can't read server timestamp
-                        if (local_exists && local_mtime_ms < update_timestamp) {
-                            try {
-                                // console.log(Math.round(local_mtime_ms))
-                                // console.log(Math.round(update_timestamp))
-                                var writePath = await get_fullpath()
-                                await wait_on(ensure_path(require("path").dirname(writePath)))
-                                await wait_on(require('fs').promises.writeFile(writePath, update.body))
-
-                                // Set the file timestamp to the update timestamp
-                                var mtime = update_timestamp / 1000
-                                await wait_on(require('fs').promises.utimes(writePath, mtime, mtime))
-                                // const statResult = await wait_on(require('fs').promises.stat(writePath));
-                                // console.log(Math.round(Number(statResult.mtimeMs))) // checking for writing vs written issues
-
-                                var st = await wait_on(require('fs').promises.stat(writePath, { bigint: true }))
-                                self.file_last_stat = st
-                                console.log(`Updated local binary file from server: ${writePath}`)
-                            } catch (e) { console.log(`Failed to update local file from server: ${e}`) }
                         }
                     })
                 }
-
-
-            } catch (e) {
-                console.log(`Failed to subscribe to server for binary file: ${e}`)
-            }
-
-            if (freed) return
-            try {
-                var stat = await wait_on(require('fs').promises.stat(fullpath, { bigint: true }))
-                if (freed) return
-                self.file_last_stat = stat
-            } catch (e) {
-                // file may not exist yet; will be handled by file_loop
-            }
-        })
-
-        file_loop_pump()
-        
-        async function file_loop_pump() {
-            if (freed) return
-            if (file_loop_pump_lock) return
-            file_loop_pump_lock++
-
-            await within_fiber(fullpath, async () => {
-                var fullpath = await get_fullpath()
-                if (freed) return
-
-                while (file_needs_reading || file_needs_writing) {
-                    if (file_needs_reading) {
-                        file_needs_reading = false
-
-                        if (!(await wait_on(file_exists(fullpath)))) {
-                            if (freed) return
-                            // file_needs_writing = true
-                            await wait_on(require('fs').promises.writeFile(fullpath, ''))
-                        }
-                        if (freed) return
-
-                        if (self.file_read_only === null) try { self.file_read_only = await wait_on(is_read_only(fullpath)) } catch (e) { }
-                        if (freed) return
-
-                        var stat = await wait_on(require('fs').promises.stat(fullpath, { bigint: true }))
-                        if (freed) return
-
-                        if (!stat_eq(stat, self.file_last_stat)) {
-                            // Importent logs for debugging precision issues
-                            // console.log(`binary file change detected in ${path}`)
-                            // console.log(`stat.mtimeMs: ${stat.mtimeMs}`)
-                            // console.log(`self.file_last_stat.mtimeMs ${self.file_last_stat.mtimeMs}`)
-                            // console.log(Math.round(Number(stat.mtimeMs)))
-
-                            // The reason we need this is because mtime from bigint stats may have 1ms difference. Unable to use it.
-                            const lower_precision_mtimems = Math.round(Number(await wait_on((await require('fs').promises.stat(fullpath)).mtimeMs)));
-                            
-                            // Upload the changed file to server
-                            try {
-                                var fileData = await wait_on(require('fs').promises.readFile(fullpath))
-                                var response = await braid_fetch(url, {
-                                    method: 'PUT',
-                                    body: fileData,
-                                    headers: { 'Content-Type': 'application/octet-stream', 'peer': self.peer, 'X-Timestamp': lower_precision_mtimems }
-                                })
-                                if (response.ok) {
-                                    console.log(`Uploaded changed binary file to server: ${url}`)
-                                }
-                            } catch (e) {
-                                console.log(`Failed to upload changed file: ${e}`)
-                            }
-                        }
-                        self.file_last_stat = stat
-                    }
-                    
-                    if (file_needs_writing) {
-                        file_needs_writing = false
-                        // Binary files are handled by the file watcher and server subscription
-                        // No additional processing needed here
-                    }
-                }
-            })
-
-            file_loop_pump_lock--
-        }
-
-        // Add disconnect function for cleanup
-        self.disconnect = async () => {
-            if (freed) return
-            freed = true
-            // Clean up any active subscriptions
-            if (self.server_subscription) {
-                try {
-                    await self.server_subscription.close?.()
-                } catch (e) {}
-            }
+                self.signal_file_needs_reading()
+            } catch (e) { return retry(e) }            
         }
 
         return self
@@ -657,19 +621,6 @@ async function sync_url(url) {
         if (freed) return
 
         // console.log(`sync_url: ${url}`)
-
-        // Check if this is a binary file
-        var is_binary_file = is_binary(path)
-        
-        if (is_binary_file) {
-            // Opts into the code for FS watcher (file_needs_reading, file_needs_writing) & unsyncing (disconnect)
-            // It notably does NOT handle `.braidfs/set_version/` and `.braidfs/get_version/` correctly!
-            // Search ` sync_url.cache[` to see how it's all handled.
-            return await init_binary_sync() 
-        }
-
-        var resource = await braid_text.get_resource(url)
-        if (freed) return
 
         // if we're accessing /blah/index, it will be normalized to /blah,
         // but we still want to create a directory out of blah in this case
@@ -682,13 +633,25 @@ async function sync_url(url) {
         await ensure_path(require("path").dirname(fullpath))
         if (freed) return
 
+        // Check if this is a binary file
+        // for now, this will be stuff in the "blobs" directory..
+        if (is_external_link && path.split('/')[1] === 'blobs') {
+            // Opts into the code for FS watcher (file_needs_reading, file_needs_writing) & unsyncing (disconnect)
+            // It notably does NOT handle `.braidfs/set_version/` and `.braidfs/get_version/` correctly!
+            // Search ` sync_url.cache[` to see how it's all handled.
+            return await init_binary_sync() 
+        }
+
+        var resource = await braid_text.get_resource(url)
+        if (freed) return
+
         self.peer = Math.random().toString(36).slice(2)
         self.local_edit_counter = 0
         self.fork_point = null
         var file_last_version = null,
             file_last_digest = null
         self.file_last_text = null
-        self.file_last_stat = null
+        self.file_mtimeNs_str = null
         self.file_read_only = null
         var file_needs_reading = true,
             file_needs_writing = null,
@@ -870,14 +833,14 @@ async function sync_url(url) {
                             add_to_version_cache(text, file_last_version)
 
                             // console.log(`no changes found in: ${fullpath}`)
-                            if (stat_eq(stat, self.file_last_stat)) {
-                                if (Date.now() > (self.file_ignore_until ?? 0))
+                            if ('' + stat.mtimeNs === self.file_mtimeNs_str) {
+                                if (Date.now() > (self.last_touch ?? 0) + 1000)
                                     on_watcher_miss(`expected change to: ${fullpath}`)
                                 // else console.log(`no changes expected`)
                             } // else console.log('found change in file stat')
                         }
-                        self.file_last_stat = stat
-                        self.file_ignore_until = Date.now() + 1000
+                        self.file_mtimeNs_str = '' + stat.mtimeNs
+                        self.last_touch = Date.now()
                     }
                     if (file_needs_writing === 'just_meta_file') {
                         file_needs_writing = false
@@ -908,7 +871,7 @@ async function sync_url(url) {
 
                             file_last_version = version
                             self.file_last_text = body
-                            self.file_ignore_until = Date.now() + 1000
+                            self.last_touch = Date.now()
                             await wait_on(require('fs').promises.writeFile(fullpath, self.file_last_text))
                             if (freed) return
                         }
@@ -918,15 +881,15 @@ async function sync_url(url) {
 
                         if (await wait_on(is_read_only(fullpath)) !== self.file_read_only) {
                             if (freed) return
-                            self.file_ignore_until = Date.now() + 1000
+                            self.last_touch = Date.now()
                             await wait_on(set_read_only(fullpath, self.file_read_only))
                         }
                         if (freed) return
 
-                        self.file_last_stat = await wait_on(require('fs').promises.stat(fullpath, { bigint: true }))
+                        self.file_mtimeNs_str = '' + (await wait_on(require('fs').promises.stat(fullpath, { bigint: true }))).mtimeNs
                         if (freed) return
 
-                        for (var cb of self.file_written_cbs) cb(self.file_last_stat)
+                        for (var cb of self.file_written_cbs) cb()
                         self.file_written_cbs = []
                     }
                 }
@@ -1547,14 +1510,6 @@ function count_code_points(str) {
 
 function v_eq(v1, v2) {
     return v1.length === v2?.length && v1.every((x, i) => x == v2[i])
-}
-
-function stat_eq(a, b) {
-    return (!a && !b) || (a && b &&
-        a.mode === b.mode &&
-        a.size === b.size &&
-        a.mtimeNs === b.mtimeNs &&
-        a.ctimeNs === b.ctimeNs)
 }
 
 async function is_read_only(fullpath) {

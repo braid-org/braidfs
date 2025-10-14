@@ -35,8 +35,11 @@ urlencode() {
     echo "$encoded"
 }
 
+# Get the base directory (can be overridden by setting BRAIDFS_BASE_DIR)
+BASE_DIR="${BRAIDFS_BASE_DIR:-${HOME}/http}"
+
 # Get the configuration file to read the port
-CONFIG_FILE="${HOME}/http/.braidfs/config"
+CONFIG_FILE="${BASE_DIR}/.braidfs/config"
 if [ -f "$CONFIG_FILE" ]; then
     PORT=$(grep -o '"port":[^,}]*' "$CONFIG_FILE" | sed 's/"port"://; s/ //g')
     if [ -z "$PORT" ]; then
