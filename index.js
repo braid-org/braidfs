@@ -133,11 +133,6 @@ async function main() {
 
             if (req.url === '/favicon.ico') return
 
-            if (!['::ffff:127.0.0.1', '127.0.0.1', '::1'].includes(req.socket.remoteAddress)) {
-                res.writeHead(403, { 'Content-Type': 'text/plain' })
-                return res.end('Access denied: only accessible from localhost')
-            }
-
             // Free the CORS
             free_the_cors(req, res)
             if (req.method === 'OPTIONS') return
@@ -200,7 +195,7 @@ async function main() {
             res.writeHead(500, { 'Error-Message': '' + e })
             res.end('' + e)
         }
-    }).listen(config.port, () => {
+    }).listen(config.port, 'localhost', () => {
         console.log(`daemon started on port ${config.port}`)
         console.log('!! only accessible from localhost !!')
 

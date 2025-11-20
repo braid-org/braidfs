@@ -126,7 +126,7 @@ server = require("http").createServer(async (req, res) => {
         }
         braid_text.serve(req, res)
     }
-}).listen(config.braid_text_port, () =>
+}).listen(config.braid_text_port, 'localhost', () =>
     console.log(`server started on port ${config.braid_text_port}`))
 
 // Modified spawn function to track child processes
