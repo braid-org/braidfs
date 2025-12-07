@@ -3,7 +3,6 @@ var path = require('path');
 var fs = require('fs');
 var braid_text = require("braid-text")
 var braid_blob = require("braid-blob");
-var { version } = require('os');
 var braid_fetch = require('braid-http').fetch
 
 // Keep track of all spawned processes
@@ -84,7 +83,9 @@ braid_text.db_folder = `${__dirname}/test_braid_text_db`
 fs.rmSync(braid_text.db_folder, { recursive: true, force: true });
 
 braid_blob.db_folder = `${__dirname}/test_braid_blob_db`
+braid_blob.meta_folder = `${__dirname}/test_braid_blob_meta`
 fs.rmSync(braid_blob.db_folder, { recursive: true, force: true });
+fs.rmSync(braid_blob.meta_folder, { recursive: true, force: true });
 
 var scriptPath = path.resolve(__dirname, '../index.js');
 
@@ -108,6 +109,8 @@ server = require("http").createServer(async (req, res) => {
     }
 
     if (req.url.startsWith('/blobs/failonce')) {
+        if (null === await braid_blob.get(req.url))
+            await braid_blob.put(req.url, 'init', {version: ['1']})
         if (req.method.startsWith('P') && !failed_once) {
             failed_once = true
             res.statusCode = 409
@@ -215,6 +218,8 @@ void (async () => {
     var configPath = path.join(syncBasePath, '.braidfs', 'config');
     var configData = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     configData.port = config.braidfs_port;
+    configData.reconnect_delay_ms = 10;
+    configData.retry_delay_ms = 10;
     fs.writeFileSync(configPath, JSON.stringify(configData));
     
     // Spawn the node script again with the modified config
@@ -298,11 +303,6 @@ void (async () => {
     spawnNodeScript(['sync', `http://localhost:${config.braid_text_port}/blobs/readonly`]);
     await new Promise(resolve => setTimeout(resolve, 100));
 
-    // ..that it is readonly on disk..
-    var fullpath = path.join(syncBasePath, `localhost:${config.braid_text_port}/blobs/readonly`)
-    if (!(await file_exists(fullpath))) return fail('file should have been there')
-    if (!(await is_read_only(fullpath))) return fail('was supposed to be readonly')
-
     // Try modifying the blob "externally"
     await braid_fetch(`http://localhost:${config.braid_text_port}/blobs/readonly`, {
         method: 'PUT',
@@ -311,6 +311,11 @@ void (async () => {
         headers: { cookie: 'PASS' }
     })
     await new Promise(resolve => setTimeout(resolve, 100))
+
+    // Check that it is readonly on disk..
+    var fullpath = path.join(syncBasePath, `localhost:${config.braid_text_port}/blobs/readonly`)
+    if (!(await file_exists(fullpath))) return fail('file should have been there')
+    if (!(await is_read_only(fullpath))) return fail('was supposed to be readonly')
 
     // Verify the current content
     if (fs.readFileSync(fullpath, 'utf8') !== 'poof') return fail('blobs/readonly content not what we wanted')
@@ -343,11 +348,11 @@ void (async () => {
 
     // Check syncing a file that fails to upload once..
     spawnNodeScript(['sync', `http://localhost:${config.braid_text_port}/blobs/failonce`]);
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, 200));
 
     fs.writeFileSync(path.join(syncBasePath, `localhost:${config.braid_text_port}/blobs/failonce`), 'hope2');
 
-    await new Promise(resolve => setTimeout(resolve, 1300))
+    await new Promise(resolve => setTimeout(resolve, 200))
 
     // Check if the change propagated back to the server
     var response = await fetch(`http://localhost:${config.braid_text_port}/blobs/failonce`);

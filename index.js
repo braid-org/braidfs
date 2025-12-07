@@ -59,7 +59,8 @@ if (require('fs').existsSync(sync_base)) {
         cookies: { 'example.com': 'secret_pass' },
         port: 45678,
         scan_interval_ms: 1000 * 20,
-        reconnect_delay_ms: 1000 * 3
+        reconnect_delay_ms: 1000 * 3,
+        retry_delay_ms: 1000,
     }
     require('fs').mkdirSync(braidfs_config_dir, { recursive: true })
     require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
@@ -520,18 +521,31 @@ async function sync_url(url) {
                 if (freed || closed) return
                 var p = self.disconnect()
 
-                console.log(`reconnecting in ${waitTime}s: ${url} after error: ${e}`)
+                var delay = waitTime * (config.retry_delay_ms ?? 1000)
+                console.log(`reconnecting in ${(delay / 1000).toFixed(2)}s: ${url} after error: ${e}`)
                 last_connect_timer = setTimeout(async () => {
                     await p
                     last_connect_timer = null
                     connect()
-                }, waitTime * 1000)
+                }, delay)
                 waitTime = Math.min(waitTime + 1, 3)
             }
 
             try {
                 var a = new AbortController()
                 aborts.add(a)
+
+                var fork_point
+                if (self.version) {
+                    // Check if server has our version
+                    var r = await braid_fetch(url, {
+                        signal: a.signal,
+                        method: "HEAD",
+                        version: ['' + self.version]
+                    })
+                    if (r.ok) fork_point = ['' + self.version]
+                }
+
                 var res = await braid_fetch(url, {
                     signal: a.signal,
                     headers: {
@@ -540,7 +554,7 @@ async function sync_url(url) {
                     subscribe: true,
                     heartbeats: 120,
                     peer: self.peer,
-                    parents: self.version != null ? ['' + self.version] : []
+                    parents: fork_point || []
                 })
                 if (freed || closed) return
 
@@ -1026,12 +1040,13 @@ async function sync_url(url) {
                 if (freed || closed) return
                 var p = self.disconnect()
 
-                console.log(`reconnecting in ${waitTime}s: ${url} after error: ${e}`)
+                var delay = waitTime * (config.retry_delay_ms ?? 1000)
+                console.log(`reconnecting in ${(delay / 1000).toFixed(2)}s: ${url} after error: ${e}`)
                 last_connect_timer = setTimeout(async () => {
                     await p
                     last_connect_timer = null
                     connect()
-                }, waitTime * 1000)
+                }, delay)
                 waitTime = Math.min(waitTime + 1, 3)
             }
 
