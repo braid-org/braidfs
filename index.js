@@ -17,7 +17,7 @@ var sync_base = `${require('os').homedir()}/http`
 var argv = process.argv.slice(2)
 var sync_base_index = argv.indexOf('--sync-base')
 if (sync_base_index !== -1 && sync_base_index < argv.length - 1) {
-    sync_base = argv[sync_base_index + 1]
+    sync_base = require('path').resolve(argv[sync_base_index + 1])
     // Remove the --sync-base and its value from argv
     argv.splice(sync_base_index, 2)
     console.log(`[Testing mode] Using sync_base: ${sync_base}`)
@@ -410,8 +410,7 @@ async function sync_url(url) {
     if (!sync_url.cache[path]) {
         var self = {url},
             freed = false,
-            aborts = new Set(),
-            braid_text_get_options = null
+            aborts = new Set()
         var wait_promise = Promise.resolve()
         var wait_on = p => {
             wait_promise = wait_promise.then(() => p)
@@ -429,13 +428,7 @@ async function sync_url(url) {
             await self.disconnect?.()
             await wait_promise
 
-            delete braid_text.cache[url]
-            for (let f of await braid_text.get_files_for_key(url)) {
-                try {
-                    console.log(`trying to delete: ${f}`)
-                    await require('fs').promises.unlink(f)
-                } catch (e) {}
-            }
+            await braid_text.delete(url)
 
             try {
                 console.log(`trying to delete: ${meta_path}`)
@@ -712,12 +705,8 @@ async function sync_url(url) {
             return await init_binary_sync() 
         }
 
-        var resource = await braid_text.get_resource(url)
-        if (freed) return
-
         self.peer = Math.random().toString(36).slice(2)
         self.local_edit_counter = 0
-        self.fork_point = null
         var file_last_version = null,
             file_last_digest = null
         self.file_last_text = null
@@ -787,8 +776,7 @@ async function sync_url(url) {
                     version: file_last_version,
                     digest: file_last_digest,
                     peer: self.peer,
-                    local_edit_counter: self.local_edit_counter,
-                    fork_point: self.fork_point
+                    local_edit_counter: self.local_edit_counter
                 } = Array.isArray(meta) ? { version: meta } : meta)
 
                 if (!self.peer) self.peer = Math.random().toString(36).slice(2)
@@ -845,8 +833,7 @@ async function sync_url(url) {
                             version: file_last_version,
                             digest: sha256(self.file_last_text),
                             peer: self.peer,
-                            local_edit_counter: self.local_edit_counter,
-                            fork_point: self.fork_point
+                            local_edit_counter: self.local_edit_counter
                         })))
                     }
 
@@ -968,333 +955,63 @@ async function sync_url(url) {
             file_loop_pump_lock--
         }
 
-        self.update_fork_point = (version, parents) => {
-            self.fork_point = extend_frontier(self.fork_point, version, parents)
-            self.signal_file_needs_writing(true)
-        }
-
-        function extend_frontier(frontier, version, parents) {
-            // special case:
-            // if current frontier has all parents,
-            //    then we can just remove those
-            //    and add version
-            var frontier_set = new Set(frontier)
-            if (parents.length &&
-                parents.every(p => frontier_set.has(p))) {
-                parents.forEach(p => frontier_set.delete(p))
-                for (var event of version) frontier_set.add(event)
-                frontier = [...frontier_set.values()]
-            } else {
-                // full-proof approach..
-                var looking_for = frontier_set
-                for (var event of version) looking_for.add(event)
-
-                frontier = []
-                var shadow = new Set()
-
-                var bytes = resource.doc.toBytes()
-                var [_, events, parentss] = braid_text.dt_parse([...bytes])
-                for (var i = events.length - 1; i >= 0 && looking_for.size; i--) {
-                    var e = events[i].join('-')
-                    if (looking_for.has(e)) {
-                        looking_for.delete(e)
-                        if (!shadow.has(e)) frontier.push(e)
-                        shadow.add(e)
-                    }
-                    if (shadow.has(e))
-                        parentss[i].forEach(p => shadow.add(p.join('-')))
-                }
-            }
-            return frontier.sort()
-        }
-
-        var waitTime = 1
-        var last_connect_timer = null
-
-        if (is_external_link) connect()
-        async function connect() {
-            if (freed) return
-            if (last_connect_timer) return
-            // console.log(`connecting to ${url}`)
-
+        function start_sync() {
             var closed = false
-            var prev_disconnect = self.disconnect
+            var ac = new AbortController()
+            aborts.add(ac)
+
             self.disconnect = async () => {
                 if (closed) return
                 closed = true
                 reconnect_rate_limiter.on_diss(url)
                 for (var a of aborts) a.abort()
                 aborts.clear()
-                if (braid_text_get_options) await braid_text.forget(url, braid_text_get_options)
-                braid_text_get_options = null
-            }
-            self.reconnect = connect
-
-            await prev_disconnect?.()
-            if (freed || closed) return
-            
-            await reconnect_rate_limiter.get_turn(url)
-            if (freed || closed) return
-
-            function retry(e) {
-                if (freed || closed) return
-                var p = self.disconnect()
-
-                var delay = waitTime * (config.retry_delay_ms ?? 1000)
-                console.log(`reconnecting in ${(delay / 1000).toFixed(2)}s: ${url} after error: ${e}`)
-                last_connect_timer = setTimeout(async () => {
-                    await p
-                    last_connect_timer = null
-                    connect()
-                }, delay)
-                waitTime = Math.min(waitTime + 1, 3)
             }
 
-            try {
-                var initial_connect_done
-                var initial_connect_promise = new Promise(done => initial_connect_done = done)
-
-                async function my_fetch(params) {
-                    if (freed || closed) return
-                    try {
-                        var a = new AbortController()
-                        aborts.add(a)
-                        return await braid_fetch(url, {
-                            ...params,
-                            signal: a.signal,
-                            headers: {
-                                ...params.headers,
-                                "Merge-Type": "dt",
-                                "Content-Type": 'text/plain',
-                                ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
-                            },
-                        })
-                    } catch (e) { retry(e) }
-                }
-                
-                async function send_out(stuff) {
-                    if (freed || closed) return
-
-                    console.log(`sending to ${url}`)
-                    console.log(JSON.stringify(stuff, null, 4).slice(0, 1000))
-
-                    var r = await my_fetch({ method: "PUT", ...stuff })
-                    if (freed || closed) return
-
-                    // the server has acknowledged this version,
-                    // so add it to the fork point
-                    if (r.ok) self.update_fork_point(stuff.version, stuff.parents)
-
-                    // if we're not authorized,
-                    else if (r.status == 401 || r.status == 403) {
-                        // and it's one of our versions (a local edit),
-                        if (self.peer === braid_text.decode_version(stuff.version[0])[0]) {
-                            // then revert it
-                            console.log(`access denied: reverting local edits`)
-                            unsync_url(url)
-                            sync_url(url)
-                        }
-                    }
-
-                    // on other errors, restart the connection
-                    else retry(new Error(`unexpected PUT status: ${r.status}`))
-                }
-
-                async function find_fork_point() {
-                    if (freed || closed) return
-                    // console.log(`[find_fork_point] url: ${url}`)
-
-                    // see if remote has the fork point
-                    if (self.fork_point) {
-                        var r = await my_fetch({
-                            method: "HEAD",
-                            version: self.fork_point
-                        })
-                        if (freed || closed) return
-
-                        if (!r.ok && r.status !== 309 && r.status !== 500) return retry(new Error(`unexpected HEAD status: ${r.status}`))
-
-                        if (r.ok) {
-                            // console.log(`[find_fork_point] "${url.split('/').pop()}" has our latest fork point, hooray!`)
-                            return
-                        }
-                    }
-
-                    // otherwise let's binary search for new fork point..
-                    var bytes = resource.doc.toBytes()
-                    var [_, events, __] = braid_text.dt_parse([...bytes])
-                    events = events.map(x => x.join('-'))
-
-                    var min = -1
-                    var max = events.length
-                    self.fork_point = []
-                    while (min + 1 < max) {
-                        var i = Math.floor((min + max)/2)
-                        var version = [events[i]]
-
-                        // console.log(`min=${min}, max=${max}, i=${i}, version=${version}`)
-
-                        //var st = Date.now()
-                        var r = await my_fetch({ method: "HEAD", version })
-                        if (freed || closed) return
-                        //console.log(`fetched in ${Date.now() - st}`)
-
-                        if (!r.ok && r.status !== 309 && r.status !== 500) return retry(new Error(`unexpected HEAD status: ${r.status}`))
-
-                        if (r.ok) {
-                            min = i
-                            self.fork_point = version
-                        } else max = i
-                    }
-                    // console.log(`[find_fork_point] settled on: ${JSON.stringify(self.fork_point)}`)
-                    self.signal_file_needs_writing(true)
-                }
-
-                await find_fork_point()
-                if (freed || closed) return
-
-                await send_new_stuff()
-                if (freed || closed) return
-
-                var a = new AbortController()
-                aborts.add(a)
-                var res = await braid_fetch(url, {
-                    signal: a.signal,
-                    headers: {
-                        "Merge-Type": "dt",
-                        'accept-encoding': 'updates(dt)',
-                        Accept: 'text/plain',
-                        ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname]),
-                    },
-                    subscribe: true,
-                    heartbeats: 120,
-                    parents: self.fork_point,
-                    peer: self.peer
-                })
-                if (freed || closed) return
-
-                if (res.status < 200 || res.status >= 300) return retry(new Error(`unexpected status: ${res.status}`))
-
-                if (res.status !== 209)
-                    return log_error(`Can't sync ${url} -- got bad response ${res.status} from server (expected 209)`)
-
-                reconnect_rate_limiter.on_conn(url)
-
-                self.file_read_only = res.headers.get('editable') === 'false'
-                self.signal_file_needs_writing()
-
-                console.log(`connected to ${url}${self.file_read_only ? ' (readonly)' : ''}`)
-                
-                initial_connect_done()
-                res.subscribe(async update => {
-                    if (freed || closed) return
-
-                    if (!update.status) {
-                        // console.log(`got initial update about ${url}`)
-
-                        await braid_text.put(resource, {
-                            body: update.body,
-                            transfer_encoding: 'dt'
-                        })
-                        if (freed || closed) return
-
-                        self.update_fork_point(JSON.parse(`[${res.headers.get('current-version')}]`), self.fork_point)
-                        self.signal_file_needs_writing()
-                        return
-                    }
-
-                    console.log(`update from ${url}`)
-
-                    if (update.body) update.body = update.body_text
-                    if (update.patches) for (let p of update.patches) p.content = p.content_text
-
-                    // console.log(`update: ${JSON.stringify(update, null, 4)}`)
-                    if (update.version.length === 0) return
-                    if (update.version.length !== 1) throw 'unexpected'
-
-                    await wait_on(braid_text.put(url, { ...update, peer: self.peer, merge_type: 'dt' }))
-                    if (freed || closed) return
-
-                    // the server is giving us this version,
-                    // so it must have it,
-                    // so let's add it to our fork point
-                    self.update_fork_point(update.version, update.parents)
-
+            // Subscribe to local changes to trigger file writes
+            braid_text.get(url, {
+                signal: ac.signal,
+                peer: self.peer,
+                merge_type: 'dt',
+                subscribe: () => {
+                    if (freed) return
                     self.signal_file_needs_writing()
-                }, retry)
-
-                // send it stuff we have but it doesn't't
-                async function send_new_stuff() {
-                    if (freed || closed) return
-                    var q = []
-                    var in_flight = new Map()
-                    var max_in_flight = 10
-                    var send_pump_lock = 0
-
-                    async function send_pump() {
-                        send_pump_lock++
-                        if (send_pump_lock > 1) return
-                        try {
-                            if (freed || closed) return
-                            if (in_flight.size >= max_in_flight) return
-                            if (!q.length) {
-                                var frontier = self.fork_point
-                                for (var u of in_flight.values())
-                                    frontier = extend_frontier(frontier, u.version, u.parents)
-
-                                var options = {
-                                    parents: frontier,
-                                    merge_type: 'dt',
-                                    peer: self.peer,
-                                    subscribe: u => u.version.length && q.push(u)
-                                }
-                                await braid_text.get(url, options)
-                                await braid_text.forget(url, options)
-                            }
-                            while (q.length && in_flight.size < max_in_flight) {
-                                let u = q.shift()
-                                in_flight.set(u.version[0], u);
-                                (async () => {
-                                    await initial_connect_promise
-                                    if (freed || closed) return
-                                    await send_out({...u, peer: self.peer})
-                                    if (freed || closed) return
-                                    in_flight.delete(u.version[0])
-                                    setTimeout(send_pump, 0)
-                                })()
-                            }
-                        } finally {
-                            var retry = send_pump_lock > 1
-                            send_pump_lock = 0
-                            if (retry) setTimeout(send_pump, 0)
-                        }
-                    }
-
-                    var initial_stuff = true
-                    await wait_on(braid_text.get(url, braid_text_get_options = {
-                        parents: self.fork_point,
-                        merge_type: 'dt',
-                        peer: self.peer,
-                        subscribe: async (u) => {
-                            if (freed || closed) return
-                            if (u.version.length) {
-                                self.signal_file_needs_writing()
-                                if (initial_stuff || in_flight.size < max_in_flight) q.push(u)
-                                send_pump()
-                            }
-                        },
-                    }))
-                    initial_stuff = false
                 }
-            } catch (e) { return retry(e) }
+            })
+
+            // Use braid_text.sync for bidirectional sync with the remote URL
+            if (is_external_link) braid_text.sync(url, new URL(url), {
+                signal: ac.signal,
+                headers: {
+                    'Content-Type': 'text/plain',
+                    ...(x => x && { Cookie: x })(config.cookies?.[new URL(url).hostname])
+                },
+                on_pre_connect: () => reconnect_rate_limiter.get_turn(url),
+                on_res: res => {
+                    if (freed) return
+                    reconnect_rate_limiter.on_conn(url)
+                    self.file_read_only = res.headers.get('editable') === 'false'
+                    console.log(`connected to ${url}${self.file_read_only ? ' (readonly)' : ''}`)
+                },
+                on_unauthorized: async () => {
+                    console.log(`access denied: reverting local edits`)
+                    unsync_url(url)
+                    //await sync_url.chain
+                    sync_url(url)
+                },
+                on_disconnect: () => {
+                    reconnect_rate_limiter.on_diss(url)
+                }
+            })
         }
 
-        // for config and errors file, listen for web changes
-        if (!is_external_link) braid_text.get(url, braid_text_get_options = {
-            peer: self.peer,
-            subscribe: () => self.signal_file_needs_writing(),
-        })
+        self.reconnect = () => {
+            for (var a of aborts) a.abort()
+            aborts.clear()
+            start_sync()
+        }
 
+        start_sync()
         return self
     }
     return await sync_url.cache[url]
