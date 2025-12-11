@@ -400,6 +400,8 @@ async function sync_url(url) {
         wasnt_normal = normalized_url != url
     url = normalized_url
 
+    await braid_text.db_folder_init()
+
     var is_external_link = url.match(/^https?:\/\//),
         path = is_external_link ? url.replace(/^https?:\/\//, '') : url,
         fullpath = `${sync_base}/${path}`,
@@ -717,6 +719,9 @@ async function sync_url(url) {
             file_loop_pump_lock = 0
         self.file_written_cbs = []
 
+        // hack: remvoe in future
+        var old_meta_fork_point = null
+
         // store a recent mapping of content-hashes to their versions,
         // to support the command line: braidfs editing filename < file
         self.hash_to_version_cache = new Map()
@@ -776,7 +781,8 @@ async function sync_url(url) {
                     version: file_last_version,
                     digest: file_last_digest,
                     peer: self.peer,
-                    local_edit_counter: self.local_edit_counter
+                    local_edit_counter: self.local_edit_counter,
+                    fork_point: old_meta_fork_point
                 } = Array.isArray(meta) ? { version: meta } : meta)
 
                 if (!self.peer) self.peer = Math.random().toString(36).slice(2)
@@ -981,6 +987,7 @@ async function sync_url(url) {
 
             // Use braid_text.sync for bidirectional sync with the remote URL
             if (is_external_link) braid_text.sync(url, new URL(url), {
+                fork_point_hint: old_meta_fork_point,
                 signal: ac.signal,
                 headers: {
                     'Content-Type': 'text/plain',
