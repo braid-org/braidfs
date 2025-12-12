@@ -822,7 +822,7 @@ async function sync_url(url) {
         })
         if (freed) return
 
-        file_loop_pump()
+        await file_loop_pump()
         async function file_loop_pump() {
             if (freed) return
             if (file_loop_pump_lock) return
