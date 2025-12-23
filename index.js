@@ -30,6 +30,9 @@ braid_text.db_folder = `${braidfs_config_dir}/braid-text-db`
 var trash = `${braidfs_config_dir}/trash`
 var temp_folder = `${braidfs_config_dir}/temp`
 
+// DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+var investigating_disconnects_log = `${braidfs_config_dir}/investigating_disconnects.log`
+
 var config = null,
     watcher_misses = 0,
     reconnect_rate_limiter = new ReconnectRateLimiter(() =>
@@ -69,6 +72,13 @@ if (require('fs').existsSync(sync_base)) {
 require('fs').mkdirSync(sync_base_meta, { recursive: true })
 require('fs').mkdirSync(trash, { recursive: true })
 require('fs').mkdirSync(temp_folder, { recursive: true })
+
+// DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+require('fs').appendFileSync(investigating_disconnects_log, `${Date.now()} -- braidfs starting\n`)
+function do_investigating_disconnects_log(url, message) {
+    if (url.match(/^https:\/\/(dt\.)?braid\.org\/hello$/))
+        require('fs').appendFileSync(investigating_disconnects_log, `${Date.now()}:${url} -- ${message}\n`)
+}
 
 // Add instructions for how to run in the background on this OS
 var to_run_in_background = process.platform === 'darwin' ? `
@@ -389,6 +399,9 @@ function unsync_url(url) {
 
     console.log(`unsync_url: ${url}`)
 
+    // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+    do_investigating_disconnects_log(url, `unsync_url: ${url}`)
+
     delete sync_url.cache[url]
     sync_url.chain = sync_url.chain.then(unsync_url.cache[url])
     delete unsync_url.cache[url]
@@ -406,6 +419,9 @@ async function sync_url(url) {
         path = is_external_link ? url.replace(/^https?:\/\//, '') : url,
         fullpath = `${sync_base}/${path}`,
         meta_path = `${sync_base_meta}/${braid_text.encode_filename(url)}`
+
+    // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+    do_investigating_disconnects_log(url, `sync_url`)
 
     if (!sync_url.cache) sync_url.cache = {}
     if (!sync_url.chain) sync_url.chain = Promise.resolve()
@@ -764,6 +780,9 @@ async function sync_url(url) {
             file_loop_pump()
         }
 
+        // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+        do_investigating_disconnects_log(url, 'before within_fiber')
+
         await within_fiber(fullpath, async () => {
             if (freed) return
             var fullpath = await get_fullpath()
@@ -821,6 +840,9 @@ async function sync_url(url) {
             }
         })
         if (freed) return
+
+        // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+        do_investigating_disconnects_log(url, 'after within_fiber')
 
         await file_loop_pump()
         async function file_loop_pump() {
@@ -961,12 +983,21 @@ async function sync_url(url) {
             file_loop_pump_lock--
         }
 
+        // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+        do_investigating_disconnects_log(url, 'after file_loop_pump')
+
         function start_sync() {
+            // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+            do_investigating_disconnects_log(url, 'start_sync')
+
             var closed = false
             var ac = new AbortController()
             aborts.add(ac)
 
             self.disconnect = async () => {
+                // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+                do_investigating_disconnects_log(url, 'self.disconnect')
+
                 if (closed) return
                 closed = true
                 reconnect_rate_limiter.on_diss(url)
@@ -987,32 +1018,53 @@ async function sync_url(url) {
 
             // Use braid_text.sync for bidirectional sync with the remote URL
             if (is_external_link) braid_text.sync(url, new URL(url), {
+
+                // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+                do_investigating_disconnects_log_L04LPFHQ1M: do_investigating_disconnects_log,
+
                 fork_point_hint: old_meta_fork_point,
                 signal: ac.signal,
                 headers: {
                     'Content-Type': 'text/plain',
                     ...(x => x && { Cookie: x })(config.cookies?.[new URL(url).hostname])
                 },
-                on_pre_connect: () => reconnect_rate_limiter.get_turn(url),
+                on_pre_connect: () => {
+                    // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+                    do_investigating_disconnects_log(url, `sync.on_pre_connect`)
+
+                    return reconnect_rate_limiter.get_turn(url)
+                },
                 on_res: res => {
+                    // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+                    do_investigating_disconnects_log(url, `sync.on_res status:${res?.status}`)
+
                     if (freed) return
                     reconnect_rate_limiter.on_conn(url)
                     self.file_read_only = res.headers.get('editable') === 'false'
                     console.log(`connected to ${url}${self.file_read_only ? ' (readonly)' : ''}`)
                 },
                 on_unauthorized: async () => {
+                    // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+                    do_investigating_disconnects_log(url, `sync.on_unauthorized`)
+
                     console.log(`access denied: reverting local edits`)
                     unsync_url(url)
                     //await sync_url.chain
                     sync_url(url)
                 },
                 on_disconnect: () => {
-                    reconnect_rate_limiter.on_diss(url)
+                    // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+                    do_investigating_disconnects_log(url, `sync.on_disconnect`)
+
+                    return reconnect_rate_limiter.on_diss(url)
                 }
             })
         }
 
         self.reconnect = () => {
+            // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+            do_investigating_disconnects_log(url, `reconnect`)
+
             for (var a of aborts) a.abort()
             aborts.clear()
             start_sync()
