@@ -186,6 +186,9 @@ async function main() {
                     var version = [sync.peer + "-" + (sync.local_edit_counter - 1)]
                     await braid_text.put(sync.url, { version, parents, patches, merge_type: 'dt' })
 
+                    // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+                    require('fs').appendFileSync(investigating_disconnects_log, `${Date.now()}:${sync.url} -- plugin edited (${sync.investigating_disconnects_thinks_connected})\n`)
+
                     // may be able to do this more efficiently.. we want to make sure we're capturing a file write that is after our version was written.. there may be a way we can avoid calling file_needs_writing here
                     await new Promise(done => {
                         sync.file_written_cbs.push(done)
@@ -459,6 +462,41 @@ async function sync_url(url) {
             } catch (e) {}
         }
         sync_url.cache[path] = sync_url.chain = sync_url.chain.then(init)
+    }
+
+    async function detect_merge_type() {
+        // special case for .braidfs/config and .braidfs/error
+        if (url.startsWith('.braidfs/')) return 'dt'
+
+        try {
+            var meta = JSON.parse(await require('fs').promises.readFile(meta_path, 'utf8'))
+
+            // optimization for old braidfs versions
+            if (typeof meta.local_edit_counter === 'number') return 'dt'
+
+            if (meta.merge_type) return meta.merge_type
+        } catch (e) {}
+        if (freed) return
+
+        var res = await braid_fetch(url, {
+            method: 'HEAD',
+            retry: () => true,
+            // braid_fetch will await this function on each reconnect when retrying
+            parents: async () => reconnect_rate_limiter.get_turn(url),
+            // version needed to force Merge-Type return header
+            version: [],
+            headers: {
+                // needed for braid.org routing
+                Accept: 'text/plain',
+                // in case it supports dt, so it doesn't give us "simpleton"
+                'Merge-Type': 'dt',
+            }
+        })
+
+        var merge_type = res.headers.get('merge-type')
+        if (merge_type) return merge_type
+
+        throw `failed to get merge type for ${url}`
     }
     
     async function init_binary_sync() {
@@ -738,6 +776,9 @@ async function sync_url(url) {
         // hack: remvoe in future
         var old_meta_fork_point = null
 
+        // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+        self.investigating_disconnects_thinks_connected = false
+
         // store a recent mapping of content-hashes to their versions,
         // to support the command line: braidfs editing filename < file
         self.hash_to_version_cache = new Map()
@@ -799,8 +840,12 @@ async function sync_url(url) {
                 !({
                     version: file_last_version,
                     digest: file_last_digest,
-                    peer: self.peer,
-                    local_edit_counter: self.local_edit_counter,
+
+                    // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+                    // create new peer to eliminate this as a potential issue for now:
+                    // peer: self.peer,
+                    // local_edit_counter: self.local_edit_counter,
+
                     fork_point: old_meta_fork_point
                 } = Array.isArray(meta) ? { version: meta } : meta)
 
@@ -911,6 +956,9 @@ async function sync_url(url) {
 
                             await wait_on(braid_text.put(url, { version, parents, patches, merge_type: 'dt' }))
                             if (freed) return
+
+                            // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
+                            require('fs').appendFileSync(investigating_disconnects_log, `${Date.now()}:${url} -- file edited (${self.investigating_disconnects_thinks_connected})\n`)
 
                             await write_meta_file()
                             if (freed) return
@@ -1037,6 +1085,7 @@ async function sync_url(url) {
                 on_res: res => {
                     // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
                     do_investigating_disconnects_log(url, `sync.on_res status:${res?.status}`)
+                    self.investigating_disconnects_thinks_connected = res?.status
 
                     if (freed) return
                     reconnect_rate_limiter.on_conn(url)
@@ -1055,6 +1104,7 @@ async function sync_url(url) {
                 on_disconnect: () => {
                     // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
                     do_investigating_disconnects_log(url, `sync.on_disconnect`)
+                    self.investigating_disconnects_thinks_connected = false
 
                     return reconnect_rate_limiter.on_diss(url)
                 }
