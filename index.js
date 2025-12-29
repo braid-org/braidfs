@@ -2,6 +2,7 @@
 
 var { diff_main } = require(`${__dirname}/diff.js`),
     braid_text = require("braid-text"),
+    braid_blob = require("braid-blob"),
     braid_fetch = require('braid-http').fetch
 
 // Helper function to check if a file is binary based on its extension
@@ -27,6 +28,8 @@ var braidfs_config_dir = `${sync_base}/.braidfs`,
     braidfs_config_file = `${braidfs_config_dir}/config`,
     sync_base_meta = `${braidfs_config_dir}/proxy_base_meta`
 braid_text.db_folder = `${braidfs_config_dir}/braid-text-db`
+braid_blob.db_folder = { read: () => {}, write: () => {}, delete: () => {} }
+braid_blob.meta_folder = `${braidfs_config_dir}/braid-blob-meta`
 var trash = `${braidfs_config_dir}/trash`
 var temp_folder = `${braidfs_config_dir}/temp`
 
@@ -417,6 +420,7 @@ async function sync_url(url) {
     url = normalized_url
 
     await braid_text.db_folder_init()
+    await braid_blob.init()
 
     var is_external_link = url.match(/^https?:\/\//),
         path = is_external_link ? url.replace(/^https?:\/\//, '') : url,
@@ -451,7 +455,10 @@ async function sync_url(url) {
             await self.disconnect?.()
             await wait_promise
 
-            await braid_text.delete(url)
+            if (self.merge_type === 'dt')
+                await braid_text.delete(url)
+            else if (self.merge_type === 'aww')
+                await braid_blob.delete(url)
 
             try {
                 console.log(`trying to delete: ${meta_path}`)
@@ -520,12 +527,14 @@ async function sync_url(url) {
             await require('fs').promises.writeFile(meta_path, JSON.stringify({
                 merge_type: self.merge_type,
                 peer: self.peer,
-                version: self.version,
                 file_mtimeNs_str: self.file_mtimeNs_str
             }))
         }
 
-        await within_fiber(url, async () => {
+        self.file_mtimeNs_str = null
+        self.file_read_only = null
+
+        await within_fiber(fullpath, async () => {
             try {
                 Object.assign(self, JSON.parse(
                     await require('fs').promises.readFile(meta_path, 'utf8')))
@@ -533,219 +542,131 @@ async function sync_url(url) {
             if (freed) return
 
             if (!self.peer) self.peer = Math.random().toString(36).slice(2)
-
-            // create file if it doesn't exist
-            var fullpath = await get_fullpath()
-            if (freed) return
-            if (!(await file_exists(fullpath))) {
-                if (freed) return
-                await wait_on(require('fs').promises.writeFile(fullpath, ''))
-                if (freed) return
-                var stat = await require('fs').promises.stat(fullpath, { bigint: true })
-                if (freed) return
-                self.file_mtimeNs_str = '' + stat.mtimeNs
-                self.last_touch = Date.now()
-            }
-            if (freed) return
-
-            await save_meta()
         })
         if (freed) return
 
-        var waitTime = 1
-        var last_connect_timer = null
+        self.signal_file_needs_reading = async () => {
+            await within_fiber(fullpath, async () => {
+                try {
+                    if (freed) return
 
-        self.signal_file_needs_reading = () => {}
+                    var fullpath = await get_fullpath()
+                    if (freed) return
 
-        connect()
-        async function connect() {
+                    var stat = await require('fs').promises.stat(fullpath, { bigint: true })
+                    if (freed) return
+
+                    if (self.file_mtimeNs_str !== '' + stat.mtimeNs) {
+                        var data = await require('fs').promises.readFile(fullpath, { encoding: 'utf8' })
+                        if (freed) return
+
+                        await braid_blob.put(url, data, { skip_write: true })
+                        if (freed) return
+                        
+                        self.file_mtimeNs_str = '' + stat.mtimeNs
+                        await save_meta()
+                    }
+                } catch (e) {
+                    if (e.code !== 'ENOENT') throw e
+                }
+            })
+        }
+        await self.signal_file_needs_reading()
+
+        var db = {
+            read: async (_key) => {
+                return await within_fiber(fullpath, async () => {
+                    var fullpath = await get_fullpath()
+                    if (freed) return
+
+                    try {
+                        return await require('fs').promises.readFile(fullpath)
+                    } catch (e) {
+                        if (e.code === 'ENOENT') return null
+                        throw e
+                    }
+                })
+            },
+            write: async (_key, data) => {
+                return await within_fiber(fullpath, async () => {
+                    var fullpath = await get_fullpath()
+                    if (freed) return
+
+                    try {
+                        var temp = `${temp_folder}/${Math.random().toString(36).slice(2)}`
+                        await require('fs').promises.writeFile(temp, data)
+                        if (freed) return
+
+                        var stat = await require('fs').promises.stat(temp, { bigint: true })
+                        if (freed) return
+
+                        await require('fs').promises.rename(temp, fullpath)
+                        if (freed) return
+
+                        self.file_mtimeNs_str = '' + stat.mtimeNs
+                        await save_meta()
+                    } catch (e) {
+                        if (e.code === 'ENOENT') return null
+                        throw e
+                    }
+                })
+            },
+            delete: async (_key) => {
+                return await within_fiber(fullpath, async () => {
+                    var fullpath = await get_fullpath()
+                    if (freed) return
+
+                    try {
+                        await require('fs').promises.unlink(fullpath)
+                    } catch (e) {
+                        if (e.code !== 'ENOENT') throw e
+                    }
+                })
+            }
+        }
+
+        var ac
+        function start_sync() {
+            if (ac) ac.abort()
             if (freed) return
-            if (last_connect_timer) return
 
             var closed = false
-            var prev_disconnect = self.disconnect
+            ac = new AbortController()
+
             self.disconnect = async () => {
                 if (closed) return
                 closed = true
                 reconnect_rate_limiter.on_diss(url)
-                for (var a of aborts) a.abort()
-                aborts.clear()
-            }
-            self.reconnect = connect
-
-            await prev_disconnect?.()
-            if (freed || closed) return
-            
-            await reconnect_rate_limiter.get_turn(url)
-            if (freed || closed) return
-
-            function retry(e) {
-                if (freed || closed) return
-                var p = self.disconnect()
-
-                var delay = waitTime * (config.retry_delay_ms ?? 1000)
-                console.log(`reconnecting in ${(delay / 1000).toFixed(2)}s: ${url} after error: ${e}`)
-                last_connect_timer = setTimeout(async () => {
-                    await p
-                    last_connect_timer = null
-                    connect()
-                }, delay)
-                waitTime = Math.min(waitTime + 1, 3)
+                ac.abort()
             }
 
-            try {
-                var a = new AbortController()
-                aborts.add(a)
-
-                var fork_point
-                if (self.version) {
-                    // Check if server has our version
-                    var r = await braid_fetch(url, {
-                        signal: a.signal,
-                        method: "HEAD",
-                        version: ['' + self.version]
-                    })
-                    if (r.ok) fork_point = ['' + self.version]
-                }
-
-                var res = await braid_fetch(url, {
-                    signal: a.signal,
-                    headers: {
-                        ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname]),
-                    },
-                    subscribe: true,
-                    heartbeats: 120,
-                    peer: self.peer,
-                    parents: fork_point || []
-                })
-                if (freed || closed) return
-
-                if (res.status < 200 || res.status >= 300) return retry(new Error(`unexpected status: ${res.status}`))
-
-                if (res.status !== 209)
-                    return log_error(`Can't sync ${url} -- got bad response ${res.status} from server (expected 209)`)
-
-                self.file_read_only = res.headers.get('editable') === 'false'
-
-                await wait_on(within_fiber(url, async () => {
-                    var fullpath = await get_fullpath()
-                    if (freed || closed) return
-
-                    await set_read_only(fullpath, self.file_read_only)
-                }))
-
-                console.log(`connected to ${url}${self.file_read_only ? ' (readonly)' : ''}`)
-
-                reconnect_rate_limiter.on_conn(url)
-                
-                res.subscribe(async update => {
-                    if (freed || closed) return
-                    if (update.version.length === 0) return
-                    if (update.version.length !== 1) throw 'unexpected'
-                    var version = 1*update.version[0]
-                    if (!update.body) return
-
-                    if (self.version != null &&
-                        version <= self.version) return
-                    self.version = version
-
-                    await within_fiber(url, async () => {
-                        var fullpath = await get_fullpath()
-                        if (freed || closed) return
-
-                        await wait_on(set_read_only(fullpath, false))
-                        if (freed || closed) return
-                        await wait_on(require('fs').promises.writeFile(fullpath, update.body))
-                        if (freed || closed) return
-                        await wait_on(set_read_only(fullpath, self.file_read_only))
-                        if (freed || closed) return
-
-                        var stat = await require('fs').promises.stat(fullpath, { bigint: true })
-                        if (freed || closed) return
-                        self.file_mtimeNs_str = '' + stat.mtimeNs
-                        self.last_touch = Date.now()
-
-                        await save_meta()
-                    })
-                }, retry)
-
-                async function send_file(fullpath) {
-                    var body = await require('fs').promises.readFile(fullpath)
-                    if (freed || closed) return
-
-                    try {
-                        var a = new AbortController()
-                        aborts.add(a)
-                        var r = await braid_fetch(url, {
-                            method: 'PUT',
-                            signal: a.signal,
-                            version: ['' + self.version],
-                            body,
-                            headers: {
-                                ...(x => x && {Cookie: x})(config.cookies?.[new URL(url).hostname])
-                            },
-                        })
-                        if (freed || closed) return
-
-                        // if we're not authorized,
-                        if (r.status == 401 || r.status == 403) {
-                            // then revert it
-                            console.log(`access denied: reverting local edits`)
-                            unsync_url(url)
-                            sync_url(url)
-                        } else if (!r.ok) {
-                            retry(new Error(`unexpected PUT status: ${r.status}`))
-                        }
-                    } catch (e) { retry(e) }
-                }
-
-                // if what we have now is newer than what the server has,
-                // go ahead and send it
-                await within_fiber(url, async () => {
-                    if (freed || closed) return
-                    var fullpath = await get_fullpath()
-                    if (freed || closed) return
-                    try {
-                        var stat = await require('fs').promises.stat(fullpath, { bigint: true })
-                    } catch (e) { return }
-                    if (freed || closed) return
-
-                    var server_v = JSON.parse(`[${res.headers.get('current-version')}]`)
-                    if (self.version != null &&
-                        '' + stat.mtimeNs === self.file_mtimeNs_str && (
-                        !server_v.length ||
-                        1*server_v[0] < self.version
-                    )) await send_file(fullpath)
-                })
-
-                self.signal_file_needs_reading = () => {
-                    within_fiber(url, async () => {
-                        if (freed || closed) return
-
-                        var fullpath = await get_fullpath()
-                        if (freed || closed) return
-
-                        try {
-                            var stat = await require('fs').promises.stat(fullpath, { bigint: true })
-                        } catch (e) { return }
-                        if (freed || closed) return
-
-                        if ('' + stat.mtimeNs !== self.file_mtimeNs_str) {
-                            self.version = Math.max((self.version || 0) + 1,
-                                Math.round(Number(stat.mtimeNs) / 1000000))
-
-                            self.file_mtimeNs_str = '' + stat.mtimeNs
-                            self.last_touch = Date.now()
-
-                            await save_meta()
-                            await send_file(fullpath)
-                        }
-                    })
-                }
-                self.signal_file_needs_reading()
-            } catch (e) { return retry(e) }            
+            braid_blob.sync(url, new URL(url), {
+                db,
+                signal: ac.signal,
+                peer: self.peer,
+                headers: {
+                    'Content-Type': 'text/plain',
+                    ...(x => x && { Cookie: x })(config.cookies?.[new URL(url).hostname])
+                },
+                on_pre_connect: () => reconnect_rate_limiter.get_turn(url),
+                on_res: res => {
+                    if (freed) return
+                    reconnect_rate_limiter.on_conn(url)
+                    self.file_read_only = res.headers.get('editable') === 'false'
+                    console.log(`connected to ${url}${self.file_read_only ? ' (readonly)' : ''}`)
+                },
+                on_unauthorized: async () => {
+                    console.log(`access denied: reverting local edits`)
+                    unsync_url(url)
+                    sync_url(url)
+                },
+                on_disconnect: () => reconnect_rate_limiter.on_diss(url)
+            })
         }
 
+        self.reconnect = () => start_sync()
+
+        start_sync()
         return self
     }
 
