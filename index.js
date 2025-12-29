@@ -429,6 +429,8 @@ async function sync_url(url) {
     if (!sync_url.cache) sync_url.cache = {}
     if (!sync_url.chain) sync_url.chain = Promise.resolve()
     if (!sync_url.cache[path]) {
+        // console.log(`sync_url: ${url}`)
+
         var self = {url},
             freed = false,
             aborts = new Set()
@@ -461,8 +463,17 @@ async function sync_url(url) {
                 await require('fs').promises.unlink(fp)
             } catch (e) {}
         }
-        sync_url.cache[path] = sync_url.chain = sync_url.chain.then(init)
+
+        sync_url.cache[path] = (async () => {
+            self.merge_type = await detect_merge_type()
+            if (self.merge_type === 'dt') {
+                return await (sync_url.chain = sync_url.chain.then(init))
+            } else if (self.merge_type === 'aww') {
+                return await (sync_url.chain = sync_url.chain.then(init_binary_sync))
+            } else throw new Error(`unknown merge-type: ${self.merge_type}`)
+        })()
     }
+    return
 
     async function detect_merge_type() {
         // special case for .braidfs/config and .braidfs/error
@@ -500,12 +511,14 @@ async function sync_url(url) {
     }
     
     async function init_binary_sync() {
+        await ensure_path_stuff()
         if (freed) return
 
         console.log(`init_binary_sync: ${url}`)
 
         async function save_meta() {
             await require('fs').promises.writeFile(meta_path, JSON.stringify({
+                merge_type: self.merge_type,
                 peer: self.peer,
                 version: self.version,
                 file_mtimeNs_str: self.file_mtimeNs_str
@@ -735,12 +748,10 @@ async function sync_url(url) {
 
         return self
     }
-    
-    async function init() {
+
+    async function ensure_path_stuff() {
         if (freed) return
-
-        // console.log(`sync_url: ${url}`)
-
+        
         // if we're accessing /blah/index, it will be normalized to /blah,
         // but we still want to create a directory out of blah in this case
         if (wasnt_normal && !(await is_dir(fullpath))) {
@@ -751,15 +762,11 @@ async function sync_url(url) {
 
         await ensure_path(require("path").dirname(fullpath))
         if (freed) return
-
-        // Check if this is a binary file
-        // for now, this will be stuff in the "blobs" directory..
-        if (is_external_link && path.split('/')[1] === 'blobs') {
-            // Opts into the code for FS watcher (file_needs_reading, file_needs_writing) & unsyncing (disconnect)
-            // It notably does NOT handle `.braidfs/set_version/` and `.braidfs/get_version/` correctly!
-            // Search ` sync_url.cache[` to see how it's all handled.
-            return await init_binary_sync() 
-        }
+    }
+    
+    async function init() {
+        await ensure_path_stuff()
+        if (freed) return
 
         self.peer = Math.random().toString(36).slice(2)
         self.local_edit_counter = 0
@@ -903,6 +910,7 @@ async function sync_url(url) {
                     async function write_meta_file() {
                         if (freed) return
                         await wait_on(require('fs').promises.writeFile(meta_path, JSON.stringify({
+                            merge_type: self.merge_type,
                             version: file_last_version,
                             digest: sha256(self.file_last_text),
                             peer: self.peer,
@@ -1123,7 +1131,6 @@ async function sync_url(url) {
         start_sync()
         return self
     }
-    return await sync_url.cache[url]
 }
 
 async function ensure_path(path) {
