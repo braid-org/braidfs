@@ -141,6 +141,10 @@ You can run it with:
 async function main() {
     process.on("unhandledRejection", (x) => console.log(`unhandledRejection: ${x.stack}`))
     process.on("uncaughtException", (x) => console.log(`uncaughtException: ${x.stack}`))
+
+    await braid_text.db_folder_init()
+    await braid_blob.init()
+
     require('http').createServer(async (req, res) => {
         try {
             // console.log(`${req.method} ${req.url}`)
@@ -216,45 +220,44 @@ async function main() {
         console.log(`daemon started on port ${config.port}`)
         console.log('!! only accessible from localhost !!')
 
-        sync_url('.braidfs/config').then(() => {
-            braid_text.get('.braidfs/config', {
-                subscribe: async update => {
-                    let prev = config
+        sync_url('.braidfs/config')
+        braid_text.get('.braidfs/config', {
+            subscribe: async update => {
+                let prev = config
 
-                    let x = await braid_text.get('.braidfs/config')
-                    try {
-                        config = JSON.parse(x)
+                let x = await braid_text.get('.braidfs/config')
+                try {
+                    config = JSON.parse(x)
 
-                        // did anything get deleted?
-                        var old_syncs = Object.entries(prev.sync).filter(x => x[1]).map(x => normalize_url(x[0]).replace(/^https?:\/\//, ''))
-                        var new_syncs = new Set(Object.entries(config.sync).filter(x => x[1]).map(x => normalize_url(x[0]).replace(/^https?:\/\//, '')))
-                        for (let url of old_syncs.filter(x => !new_syncs.has(x)))
-                            unsync_url(url)
+                    // did anything get deleted?
+                    var old_syncs = Object.entries(prev.sync).filter(x => x[1]).map(x => normalize_url(x[0]).replace(/^https?:\/\//, ''))
+                    var new_syncs = new Set(Object.entries(config.sync).filter(x => x[1]).map(x => normalize_url(x[0]).replace(/^https?:\/\//, '')))
+                    for (let url of old_syncs.filter(x => !new_syncs.has(x)))
+                        unsync_url(url)
 
-                        // sync all the new stuff
-                        for (let x of Object.entries(config.sync)) if (x[1]) sync_url(x[0])
+                    // sync all the new stuff
+                    for (let x of Object.entries(config.sync)) if (x[1]) sync_url(x[0])
 
-                        // if any auth stuff has changed,
-                        // have the appropriate connections reconnect
-                        let changed = new Set()
-                        // any old domains no longer exist?
-                        for (let domain of Object.keys(prev.cookies ?? {}))
-                            if (!config.cookies?.[domain]) changed.add(domain)
-                        // any new domains not like the old?
-                        for (let [domain, v] of Object.entries(config.cookies ?? {}))
-                            if (!prev.cookies?.[domain]
-                                || JSON.stringify(prev.cookies[domain]) !== JSON.stringify(v))
-                                changed.add(domain)
-                        // ok, have every domain which has changed reconnect
-                        for (let [path, x] of Object.entries(sync_url.cache))
-                            if (changed.has(path.split(/\//)[0].split(/:/)[0]))
-                                (await x).reconnect?.()
-                    } catch (e) {
-                        if (x !== '') console.log(`warning: config file is currently invalid.`)
-                        return
-                    }
+                    // if any auth stuff has changed,
+                    // have the appropriate connections reconnect
+                    let changed = new Set()
+                    // any old domains no longer exist?
+                    for (let domain of Object.keys(prev.cookies ?? {}))
+                        if (!config.cookies?.[domain]) changed.add(domain)
+                    // any new domains not like the old?
+                    for (let [domain, v] of Object.entries(config.cookies ?? {}))
+                        if (!prev.cookies?.[domain]
+                            || JSON.stringify(prev.cookies[domain]) !== JSON.stringify(v))
+                            changed.add(domain)
+                    // ok, have every domain which has changed reconnect
+                    for (let [path, x] of Object.entries(sync_url.cache))
+                        if (changed.has(path.split(/\//)[0].split(/:/)[0]))
+                            (await x).reconnect?.()
+                } catch (e) {
+                    if (x !== '') console.log(`warning: config file is currently invalid.`)
+                    return
                 }
-            })
+            }
         })
         sync_url('.braidfs/errors')
 
@@ -413,14 +416,11 @@ function unsync_url(url) {
     delete unsync_url.cache[url]
 }
 
-async function sync_url(url) {
+function sync_url(url) {
     // normalize url by removing any trailing /index/index/
     var normalized_url = normalize_url(url),
         wasnt_normal = normalized_url != url
     url = normalized_url
-
-    await braid_text.db_folder_init()
-    await braid_blob.init()
 
     var is_external_link = url.match(/^https?:\/\//),
         path = is_external_link ? url.replace(/^https?:\/\//, '') : url,
@@ -480,7 +480,6 @@ async function sync_url(url) {
             } else throw new Error(`unknown merge-type: ${self.merge_type}`)
         })()
     }
-    return
 
     async function detect_merge_type() {
         // special case for .braidfs/config and .braidfs/error
