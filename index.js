@@ -604,6 +604,12 @@ function sync_url(url) {
 
                         self.file_mtimeNs_str = '' + stat.mtimeNs
                         await save_meta()
+                        if (freed) return
+
+                        if (self.file_read_only !== null && await is_read_only(fullpath) !== self.file_read_only) {
+                            if (freed) return
+                            await set_read_only(fullpath, self.file_read_only)
+                        }
                     } catch (e) {
                         if (e.code === 'ENOENT') return null
                         throw e
@@ -648,11 +654,23 @@ function sync_url(url) {
                     ...(x => x && { Cookie: x })(config.cookies?.[new URL(url).hostname])
                 },
                 on_pre_connect: () => reconnect_rate_limiter.get_turn(url),
-                on_res: res => {
+                on_res: async res => {
                     if (freed) return
                     reconnect_rate_limiter.on_conn(url)
                     self.file_read_only = res.headers.get('editable') === 'false'
                     console.log(`connected to ${url}${self.file_read_only ? ' (readonly)' : ''}`)
+
+                    await within_fiber(fullpath, async () => {
+                        var fullpath = await get_fullpath()
+                        if (freed) return
+
+                        try {
+                            if (await is_read_only(fullpath) !== self.file_read_only) {
+                                if (freed) return
+                                await set_read_only(fullpath, self.file_read_only)
+                            }
+                        } catch (e) {}
+                    })
                 },
                 on_unauthorized: async () => {
                     console.log(`access denied: reverting local edits`)
