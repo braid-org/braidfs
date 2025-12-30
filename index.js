@@ -1156,24 +1156,41 @@ function ReconnectRateLimiter(get_wait_time) {
 async function fetch_http2(url, options = {}) {
     if (!fetch_http2.sessions) {
         fetch_http2.sessions = new Map()
-        process.on("exit", () => fetch_http2.sessions.forEach(s => s.close()))
+        process.on("exit", () => fetch_http2.sessions.forEach(s => s.session.close()))
     }
 
     var u = new URL(url)
     if (u.protocol !== "https:") return fetch(url, options)
 
     try {
-        var session = fetch_http2.sessions.get(u.origin)
-        if (!session || session.closed) {
-            session = require("http2").connect(u.origin, {
+        var sessionInfo = fetch_http2.sessions.get(u.origin)
+        if (!sessionInfo || sessionInfo.session.closed) {
+            var session = require("http2").connect(u.origin, {
                 rejectUnauthorized: options.rejectUnauthorized !== false,
             })
-            session.on("error", () => fetch_http2.sessions.delete(u.origin))
-            session.on("close", () => fetch_http2.sessions.delete(u.origin))
-            fetch_http2.sessions.set(u.origin, session)
+            sessionInfo = { session, pendingRejects: new Set() }
+
+            session.on("error", (e) => {
+                for (var f of sessionInfo.pendingRejects) f(e)
+                fetch_http2.sessions.delete(u.origin)
+            })
+            session.on("close", () => {
+                var e = new Error('Session closed')
+                for (var f of sessionInfo.pendingRejects) f(e)
+                fetch_http2.sessions.delete(u.origin)
+            })
+            fetch_http2.sessions.set(u.origin, sessionInfo)
         }
 
+        var session = sessionInfo.session
+
         return await new Promise((resolve, reject) => {
+            sessionInfo.pendingRejects.add(reject)
+
+            var responseTimeout = setTimeout(() => {
+                stream.destroy(new Error('Response timeout'))
+            }, options.responseTimeout || 10000)
+
             var stream = session.request({
                 ":method": options.method || "GET",
                 ":path": u.pathname + u.search,
@@ -1187,6 +1204,8 @@ async function fetch_http2(url, options = {}) {
                 { once: true })
 
             stream.on("response", headers => {
+                clearTimeout(responseTimeout)
+                sessionInfo.pendingRejects.delete(reject)
                 var status = +headers[":status"]
                 resolve({
                     ok: status >= 200 && status < 300,
@@ -1225,7 +1244,11 @@ async function fetch_http2(url, options = {}) {
                 })
             })
 
-            stream.on("error", reject)
+            stream.on("error", (err) => {
+                clearTimeout(responseTimeout)
+                sessionInfo.pendingRejects.delete(reject)
+                reject(err)
+            })
 
             var body = options.body
             if (!body) return stream.end()
