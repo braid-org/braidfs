@@ -12,6 +12,8 @@ function is_binary(filename) {
 }
 
 braid_fetch.set_fetch(fetch_http2)
+braid_text.braid_fetch.set_fetch(fetch_http2)
+braid_blob.braid_fetch.set_fetch(fetch_http2)
 
 var sync_base = `${require('os').homedir()}/http`
 // Check for --sync-base argument (hidden for testing)
@@ -435,8 +437,8 @@ function sync_url(url) {
     if (!sync_url.cache[path]) {
         // console.log(`sync_url: ${url}`)
 
-        var self = {url},
-            freed = false,
+        var self = {url,
+            ac: new AbortController()},
             aborts = new Set()
         var wait_promise = Promise.resolve()
         var wait_on = p => {
@@ -451,7 +453,7 @@ function sync_url(url) {
         }
         if (!unsync_url.cache) unsync_url.cache = {}
         unsync_url.cache[path] = async () => {
-            freed = true
+            self.ac.abort()
             await self.disconnect?.()
             await wait_promise
 
@@ -473,6 +475,8 @@ function sync_url(url) {
 
         sync_url.cache[path] = (async () => {
             self.merge_type = await detect_merge_type()
+            if (self.ac.signal.aborted) return
+
             if (self.merge_type === 'dt') {
                 return await (sync_url.chain = sync_url.chain.then(init))
             } else if (self.merge_type === 'aww') {
@@ -493,32 +497,46 @@ function sync_url(url) {
 
             if (meta.merge_type) return meta.merge_type
         } catch (e) {}
-        if (freed) return
+        if (self.ac.signal.aborted) return
 
-        var res = await braid_fetch(url, {
-            method: 'HEAD',
-            retry: () => true,
-            // braid_fetch will await this function on each reconnect when retrying
-            parents: async () => reconnect_rate_limiter.get_turn(url),
-            // version needed to force Merge-Type return header
-            version: [],
-            headers: {
-                // needed for braid.org routing
-                Accept: 'text/plain',
-                // in case it supports dt, so it doesn't give us "simpleton"
-                'Merge-Type': 'dt',
+        var retry_count = 0
+        while (true) {
+            try {
+                var res = await braid_fetch(url, {
+                    signal: self.ac.signal,
+                    method: 'HEAD',
+                    retry: () => true,
+                    // braid_fetch will await this function on each reconnect when retrying
+                    parents: async () => reconnect_rate_limiter.get_turn(url),
+                    // version needed to force Merge-Type return header
+                    version: [],
+                    headers: {
+                        // needed for braid.org routing
+                        Accept: 'text/plain',
+                        // in case it supports dt, so it doesn't give us "simpleton"
+                        'Merge-Type': 'dt',
+                    }
+                })
+                if (self.ac.signal.aborted) return
+
+                var merge_type = res.headers.get('merge-type')
+                if (merge_type) return merge_type
+            } catch (e) {
+                if (e.name !== 'AbortError') throw e
             }
-        })
+            if (self.ac.signal.aborted) return
 
-        var merge_type = res.headers.get('merge-type')
-        if (merge_type) return merge_type
-
-        throw `failed to get merge type for ${url}`
+            // Retry with increasing delays: 1s, 2s, 3s, 3s, 3s...
+            var delay = Math.min(++retry_count, 3)
+            console.log(`retrying in ${delay}s: ${url} after error: no merge-type header`)
+            await new Promise(r => setTimeout(r, delay * 1000))
+            if (self.ac.signal.aborted) return
+        }
     }
     
     async function init_binary_sync() {
         await ensure_path_stuff()
-        if (freed) return
+        if (self.ac.signal.aborted) return
 
         console.log(`init_binary_sync: ${url}`)
 
@@ -538,29 +556,29 @@ function sync_url(url) {
                 Object.assign(self, JSON.parse(
                     await require('fs').promises.readFile(meta_path, 'utf8')))
             } catch (e) {}
-            if (freed) return
+            if (self.ac.signal.aborted) return
 
             if (!self.peer) self.peer = Math.random().toString(36).slice(2)
         })
-        if (freed) return
+        if (self.ac.signal.aborted) return
 
         self.signal_file_needs_reading = async () => {
             await within_fiber(fullpath, async () => {
                 try {
-                    if (freed) return
+                    if (self.ac.signal.aborted) return
 
                     var fullpath = await get_fullpath()
-                    if (freed) return
+                    if (self.ac.signal.aborted) return
 
                     var stat = await require('fs').promises.stat(fullpath, { bigint: true })
-                    if (freed) return
+                    if (self.ac.signal.aborted) return
 
                     if (self.file_mtimeNs_str !== '' + stat.mtimeNs) {
                         var data = await require('fs').promises.readFile(fullpath, { encoding: 'utf8' })
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
 
                         await braid_blob.put(url, data, { skip_write: true })
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
                         
                         self.file_mtimeNs_str = '' + stat.mtimeNs
                         await save_meta()
@@ -576,7 +594,7 @@ function sync_url(url) {
             read: async (_key) => {
                 return await within_fiber(fullpath, async () => {
                     var fullpath = await get_fullpath()
-                    if (freed) return
+                    if (self.ac.signal.aborted) return
 
                     try {
                         return await require('fs').promises.readFile(fullpath)
@@ -589,25 +607,25 @@ function sync_url(url) {
             write: async (_key, data) => {
                 return await within_fiber(fullpath, async () => {
                     var fullpath = await get_fullpath()
-                    if (freed) return
+                    if (self.ac.signal.aborted) return
 
                     try {
                         var temp = `${temp_folder}/${Math.random().toString(36).slice(2)}`
                         await require('fs').promises.writeFile(temp, data)
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
 
                         var stat = await require('fs').promises.stat(temp, { bigint: true })
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
 
                         await require('fs').promises.rename(temp, fullpath)
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
 
                         self.file_mtimeNs_str = '' + stat.mtimeNs
                         await save_meta()
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
 
                         if (self.file_read_only !== null && await is_read_only(fullpath) !== self.file_read_only) {
-                            if (freed) return
+                            if (self.ac.signal.aborted) return
                             await set_read_only(fullpath, self.file_read_only)
                         }
                     } catch (e) {
@@ -619,7 +637,7 @@ function sync_url(url) {
             delete: async (_key) => {
                 return await within_fiber(fullpath, async () => {
                     var fullpath = await get_fullpath()
-                    if (freed) return
+                    if (self.ac.signal.aborted) return
 
                     try {
                         await require('fs').promises.unlink(fullpath)
@@ -633,7 +651,7 @@ function sync_url(url) {
         var ac
         function start_sync() {
             if (ac) ac.abort()
-            if (freed) return
+            if (self.ac.signal.aborted) return
 
             var closed = false
             ac = new AbortController()
@@ -655,18 +673,18 @@ function sync_url(url) {
                 },
                 on_pre_connect: () => reconnect_rate_limiter.get_turn(url),
                 on_res: async res => {
-                    if (freed) return
+                    if (self.ac.signal.aborted) return
                     reconnect_rate_limiter.on_conn(url)
                     self.file_read_only = res.headers.get('editable') === 'false'
                     console.log(`connected to ${url}${self.file_read_only ? ' (readonly)' : ''}`)
 
                     await within_fiber(fullpath, async () => {
                         var fullpath = await get_fullpath()
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
 
                         try {
                             if (await is_read_only(fullpath) !== self.file_read_only) {
-                                if (freed) return
+                                if (self.ac.signal.aborted) return
                                 await set_read_only(fullpath, self.file_read_only)
                             }
                         } catch (e) {}
@@ -688,23 +706,23 @@ function sync_url(url) {
     }
 
     async function ensure_path_stuff() {
-        if (freed) return
+        if (self.ac.signal.aborted) return
         
         // if we're accessing /blah/index, it will be normalized to /blah,
         // but we still want to create a directory out of blah in this case
         if (wasnt_normal && !(await is_dir(fullpath))) {
-            if (freed) return
+            if (self.ac.signal.aborted) return
             await ensure_path(fullpath)
         }
-        if (freed) return
+        if (self.ac.signal.aborted) return
 
         await ensure_path(require("path").dirname(fullpath))
-        if (freed) return
+        if (self.ac.signal.aborted) return
     }
     
     async function init() {
         await ensure_path_stuff()
-        if (freed) return
+        if (self.ac.signal.aborted) return
 
         self.peer = Math.random().toString(36).slice(2)
         self.local_edit_counter = 0
@@ -751,13 +769,13 @@ function sync_url(url) {
         }
 
         self.signal_file_needs_reading = () => {
-            if (freed) return
+            if (self.ac.signal.aborted) return
             file_needs_reading = true
             file_loop_pump()
         }
 
         self.signal_file_needs_writing = (just_meta_file) => {
-            if (freed) return
+            if (self.ac.signal.aborted) return
 
             if (!just_meta_file) file_needs_writing = true
             else if (just_meta_file && !file_needs_writing)
@@ -770,16 +788,16 @@ function sync_url(url) {
         do_investigating_disconnects_log(url, 'before within_fiber')
 
         await within_fiber(fullpath, async () => {
-            if (freed) return
+            if (self.ac.signal.aborted) return
             var fullpath = await get_fullpath()
-            if (freed) return
+            if (self.ac.signal.aborted) return
             if (await wait_on(require('fs').promises.access(meta_path).then(
                 () => 1, () => 0))) {
-                if (freed) return
+                if (self.ac.signal.aborted) return
 
                 // meta file exists
                 let meta = JSON.parse(await wait_on(require('fs').promises.readFile(meta_path, { encoding: 'utf8' })))
-                if (freed) return
+                if (self.ac.signal.aborted) return
                 
                 // destructure stuff from the meta file
                 !({
@@ -800,7 +818,7 @@ function sync_url(url) {
                 try {
                     self.file_last_text = (await wait_on(braid_text.get(url, { version: file_last_version }))).body
                 } catch (e) {
-                    if (freed) return
+                    if (self.ac.signal.aborted) return
                     // the version from the meta file doesn't exist..
                     if (fullpath === braidfs_config_file) {
                         // in the case of the config file,
@@ -809,44 +827,44 @@ function sync_url(url) {
                         // to the latest
                         console.log(`WARNING: there was an issue with the config file, and it is reverting to the contents at: ${braidfs_config_file}`)
                         var x = await wait_on(braid_text.get(url, {}))
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
                         file_last_version = x.version
                         self.file_last_text = x.body
                         file_last_digest = sha256(self.file_last_text)
                     } else throw new Error(`sync error: version not found: ${file_last_version}`)
                 }
-                if (freed) return
+                if (self.ac.signal.aborted) return
 
                 file_needs_writing = !v_eq(file_last_version, (await wait_on(braid_text.get(url, {}))).version)
-                if (freed) return
+                if (self.ac.signal.aborted) return
 
                 // sanity check
                 if (file_last_digest && sha256(self.file_last_text) != file_last_digest) throw new Error('file_last_text does not match file_last_digest')
             } else if (await wait_on(require('fs').promises.access(fullpath).then(() => 1, () => 0))) {
-                if (freed) return
+                if (self.ac.signal.aborted) return
                 // file exists, but not meta file
                 file_last_version = []
                 self.file_last_text = ''
             }
         })
-        if (freed) return
+        if (self.ac.signal.aborted) return
 
         // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
         do_investigating_disconnects_log(url, 'after within_fiber')
 
         await file_loop_pump()
         async function file_loop_pump() {
-            if (freed) return
+            if (self.ac.signal.aborted) return
             if (file_loop_pump_lock) return
             file_loop_pump_lock++
 
             await within_fiber(fullpath, async () => {
                 var fullpath = await get_fullpath()
-                if (freed) return
+                if (self.ac.signal.aborted) return
 
                 while (file_needs_reading || file_needs_writing) {
                     async function write_meta_file() {
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
                         await wait_on(require('fs').promises.writeFile(meta_path, JSON.stringify({
                             merge_type: self.merge_type,
                             version: file_last_version,
@@ -863,7 +881,7 @@ function sync_url(url) {
 
                         // check if file is missing, and create it if so..
                         if (!(await wait_on(file_exists(fullpath)))) {
-                            if (freed) return
+                            if (self.ac.signal.aborted) return
 
                             // console.log(`file not found, creating: ${fullpath}`)
                             
@@ -873,17 +891,17 @@ function sync_url(url) {
 
                             await wait_on(require('fs').promises.writeFile(fullpath, self.file_last_text))
                         }
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
 
                         if (self.file_read_only === null) try { self.file_read_only = await wait_on(is_read_only(fullpath)) } catch (e) { }
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
 
                         let text = await wait_on(require('fs').promises.readFile(
                             fullpath, { encoding: 'utf8' }))
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
 
                         var stat = await wait_on(require('fs').promises.stat(fullpath, { bigint: true }))
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
 
                         var patches = diff(self.file_last_text, text)
                         if (patches.length) {
@@ -901,13 +919,13 @@ function sync_url(url) {
                             add_to_version_cache(text, version)
 
                             await wait_on(braid_text.put(url, { version, parents, patches, merge_type: 'dt' }))
-                            if (freed) return
+                            if (self.ac.signal.aborted) return
 
                             // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
                             require('fs').appendFileSync(investigating_disconnects_log, `${Date.now()}:${url} -- file edited (${self.investigating_disconnects_thinks_connected})\n`)
 
                             await write_meta_file()
-                            if (freed) return
+                            if (self.ac.signal.aborted) return
                         } else {
                             add_to_version_cache(text, file_last_version)
 
@@ -924,16 +942,16 @@ function sync_url(url) {
                     if (file_needs_writing === 'just_meta_file') {
                         file_needs_writing = false
                         await write_meta_file()
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
                     } else if (file_needs_writing) {
                         file_needs_writing = false
                         let { version, body } = await wait_on(braid_text.get(url, {}))
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
                         if (!v_eq(version, file_last_version)) {
                             // let's do a final check to see if anything has changed
                             // before writing out a new version of the file
                             let text = await wait_on(require('fs').promises.readFile(fullpath, { encoding: 'utf8' }))
-                            if (freed) return
+                            if (self.ac.signal.aborted) return
                             if (self.file_last_text != text) {
                                 // if the text is different, let's read it first..
                                 file_needs_reading = true
@@ -946,27 +964,27 @@ function sync_url(url) {
                             add_to_version_cache(body, version)
 
                             try { if (await wait_on(is_read_only(fullpath))) await wait_on(set_read_only(fullpath, false)) } catch (e) { }
-                            if (freed) return
+                            if (self.ac.signal.aborted) return
 
                             file_last_version = version
                             self.file_last_text = body
                             self.last_touch = Date.now()
                             await wait_on(require('fs').promises.writeFile(fullpath, self.file_last_text))
-                            if (freed) return
+                            if (self.ac.signal.aborted) return
                         }
 
                         await write_meta_file()
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
 
                         if (await wait_on(is_read_only(fullpath)) !== self.file_read_only) {
-                            if (freed) return
+                            if (self.ac.signal.aborted) return
                             self.last_touch = Date.now()
                             await wait_on(set_read_only(fullpath, self.file_read_only))
                         }
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
 
                         self.file_mtimeNs_str = '' + (await wait_on(require('fs').promises.stat(fullpath, { bigint: true }))).mtimeNs
-                        if (freed) return
+                        if (self.ac.signal.aborted) return
 
                         for (var cb of self.file_written_cbs) cb()
                         self.file_written_cbs = []
@@ -1005,7 +1023,7 @@ function sync_url(url) {
                 peer: self.peer,
                 merge_type: 'dt',
                 subscribe: () => {
-                    if (freed) return
+                    if (self.ac.signal.aborted) return
                     self.signal_file_needs_writing()
                 }
             })
@@ -1033,7 +1051,7 @@ function sync_url(url) {
                     do_investigating_disconnects_log(url, `sync.on_res status:${res?.status}`)
                     self.investigating_disconnects_thinks_connected = res?.status
 
-                    if (freed) return
+                    if (self.ac.signal.aborted) return
                     reconnect_rate_limiter.on_conn(url)
                     self.file_read_only = res.headers.get('editable') === 'false'
                     console.log(`connected to ${url}${self.file_read_only ? ' (readonly)' : ''}`)
