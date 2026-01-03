@@ -572,7 +572,7 @@ function sync_url(url) {
                     if (self.ac.signal.aborted) return
 
                     if (self.file_mtimeNs_str !== '' + stat.mtimeNs) {
-                        var data = await require('fs').promises.readFile(fullpath, { encoding: 'utf8' })
+                        var data = await require('fs').promises.readFile(fullpath)
                         if (self.ac.signal.aborted) return
 
                         await braid_blob.put(url, data, { skip_write: true })
