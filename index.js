@@ -511,8 +511,6 @@ function sync_url(url) {
                     // version needed to force Merge-Type return header
                     version: [],
                     headers: {
-                        // needed for braid.org routing
-                        Accept: 'text/plain',
                         // in case it supports dt, so it doesn't give us "simpleton"
                         'Merge-Type': 'dt',
                     }
@@ -668,7 +666,6 @@ function sync_url(url) {
                 signal: ac.signal,
                 peer: self.peer,
                 headers: {
-                    'Content-Type': 'text/plain',
                     ...(x => x && { Cookie: x })(config.cookies?.[new URL(url).hostname])
                 },
                 on_pre_connect: () => reconnect_rate_limiter.get_turn(url),
