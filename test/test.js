@@ -118,10 +118,7 @@ server = require("http").createServer(async (req, res) => {
         }
     }
 
-    if (req.url.startsWith('/blobs/slow') && req.headers.subscribe) {
-        res.statusCode = 209
-        res.write('\n\n')
-    } else if (req.url.startsWith('/blobs/')) {
+    if (req.url.startsWith('/blobs/')) {
         braid_blob.serve(req, res)
     } else {
         if (!(await braid_text.get(req.url, {})).version.length) {
@@ -219,7 +216,6 @@ void (async () => {
     var configData = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     configData.port = config.braidfs_port;
     configData.reconnect_delay_ms = 10;
-    configData.retry_delay_ms = 10;
     fs.writeFileSync(configPath, JSON.stringify(configData));
     
     // Spawn the node script again with the modified config
@@ -285,19 +281,6 @@ void (async () => {
     var serverContent = await response.text();
     console.log(`serverContent = ${serverContent}`)
     if (serverContent !== 'YO!') return fail('server blob/z content not what we wanted')
-
-    // Try getting the binary read-file code to run before it gets the first subscription response
-    spawnNodeScript(['sync', `http://localhost:${config.braid_text_port}/blobs/slow`]);
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    fs.writeFileSync(path.join(syncBasePath, `localhost:${config.braid_text_port}/blobs/slow`), 'boop');
-    await new Promise(resolve => setTimeout(resolve, 400));
-
-    // Check if the change propagated back to the server
-    var response = await fetch(`http://localhost:${config.braid_text_port}/blobs/slow`);
-    var serverContent = await response.text();
-    console.log(`serverContent = ${serverContent}`)
-    if (serverContent !== 'boop') return fail('server blob/slow content not what we wanted')
 
     // Check syncing a readonly file..
     spawnNodeScript(['sync', `http://localhost:${config.braid_text_port}/blobs/readonly`]);

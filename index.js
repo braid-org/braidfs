@@ -39,44 +39,49 @@ var temp_folder = `${braidfs_config_dir}/temp`
 var investigating_disconnects_log = `${braidfs_config_dir}/investigating_disconnects.log`
 
 var config = null,
-    watcher_misses = 0,
-    reconnect_rate_limiter = new ReconnectRateLimiter(() =>
-        config?.reconnect_delay_ms ?? 3000)
+    watcher_misses = 0
 
-if (require('fs').existsSync(sync_base)) {
-    try {
-        config = require('fs').readFileSync(braidfs_config_file, 'utf8')
-    } catch (e) { return console.log(`could not find config file: ${braidfs_config_file}`) }
+require('fs').mkdirSync(braidfs_config_dir, { recursive: true })
+require('fs').mkdirSync(sync_base_meta, { recursive: true })
+require('fs').mkdirSync(trash, { recursive: true })
+require('fs').mkdirSync(temp_folder, { recursive: true })
+
+// Clear out temp folder
+for (let f of require('fs').readdirSync(temp_folder))
+    require('fs').unlinkSync(`${temp_folder}/${f}`)
+
+try {
+    config = require('fs').readFileSync(braidfs_config_file, 'utf8')
     try {
         config = JSON.parse(config)
-    } catch (e) { return console.log(`could not parse config file: ${braidfs_config_file}`) }
 
-    // for 0.0.55 users upgrading to 0.0.56,
-    // which changes the config "domains" key to "cookies",
-    // and condenses its structure a bit
-    if (config.domains) {
-        config.cookies = Object.fromEntries(Object.entries(config.domains).map(([k, v]) => {
-            if (v.auth_headers?.Cookie) return [k, v.auth_headers.Cookie]
-        }).filter(x => x))
-        delete config.domains
-        require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
-    }
-} else {
+        // for 0.0.55 users upgrading to 0.0.56,
+        // which changes the config "domains" key to "cookies",
+        // and condenses its structure a bit
+        if (config.domains) {
+            config.cookies = Object.fromEntries(Object.entries(config.domains).map(([k, v]) => {
+                if (v.auth_headers?.Cookie) return [k, v.auth_headers.Cookie]
+            }).filter(x => x))
+            delete config.domains
+            atomic_write_sync(braidfs_config_file, JSON.stringify(config, null, 4), temp_folder)
+        }
+    } catch (e) { return console.log(`could not parse config file: ${braidfs_config_file}`) }
+} catch (e) {
     config = {
         sync: {},
         cookies: { 'example.com': 'secret_pass' },
         port: 45678,
         scan_interval_ms: 1000 * 20,
         reconnect_delay_ms: 1000 * 3,
-        retry_delay_ms: 1000,
     }
-    require('fs').mkdirSync(braidfs_config_dir, { recursive: true })
-    require('fs').writeFileSync(braidfs_config_file, JSON.stringify(config, null, 4))
+    atomic_write_sync(braidfs_config_file, JSON.stringify(config, null, 4), temp_folder)
 }
 
-require('fs').mkdirSync(sync_base_meta, { recursive: true })
-require('fs').mkdirSync(trash, { recursive: true })
-require('fs').mkdirSync(temp_folder, { recursive: true })
+var reconnect_rate_limiter = new ReconnectRateLimiter(config.reconnect_delay_ms ?? 3000)
+if (config.reconnect_delay_ms) {
+    braid_fetch.reconnect_delay_ms = config.reconnect_delay_ms
+    braid_blob.reconnect_delay_ms = config.reconnect_delay_ms
+}
 
 // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
 require('fs').appendFileSync(investigating_disconnects_log, `${Date.now()} -- braidfs starting\n`)
@@ -539,11 +544,11 @@ function sync_url(url) {
         console.log(`init_binary_sync: ${url}`)
 
         async function save_meta() {
-            await require('fs').promises.writeFile(meta_path, JSON.stringify({
+            await atomic_write(meta_path, JSON.stringify({
                 merge_type: self.merge_type,
                 peer: self.peer,
                 file_mtimeNs_str: self.file_mtimeNs_str
-            }))
+            }), temp_folder)
         }
 
         self.file_mtimeNs_str = null
@@ -608,14 +613,7 @@ function sync_url(url) {
                     if (self.ac.signal.aborted) return
 
                     try {
-                        var temp = `${temp_folder}/${Math.random().toString(36).slice(2)}`
-                        await require('fs').promises.writeFile(temp, data)
-                        if (self.ac.signal.aborted) return
-
-                        var stat = await require('fs').promises.stat(temp, { bigint: true })
-                        if (self.ac.signal.aborted) return
-
-                        await require('fs').promises.rename(temp, fullpath)
+                        var stat = await atomic_write(fullpath, data, temp_folder)
                         if (self.ac.signal.aborted) return
 
                         self.file_mtimeNs_str = '' + stat.mtimeNs
@@ -862,13 +860,13 @@ function sync_url(url) {
                 while (file_needs_reading || file_needs_writing) {
                     async function write_meta_file() {
                         if (self.ac.signal.aborted) return
-                        await wait_on(require('fs').promises.writeFile(meta_path, JSON.stringify({
+                        await wait_on(atomic_write(meta_path, JSON.stringify({
                             merge_type: self.merge_type,
                             version: file_last_version,
                             digest: sha256(self.file_last_text),
                             peer: self.peer,
                             local_edit_counter: self.local_edit_counter
-                        })))
+                        }), temp_folder))
                     }
 
                     if (file_needs_reading) {
@@ -886,7 +884,7 @@ function sync_url(url) {
                             file_last_version = []
                             self.file_last_text = ''
 
-                            await wait_on(require('fs').promises.writeFile(fullpath, self.file_last_text))
+                            await wait_on(atomic_write(fullpath, self.file_last_text, temp_folder))
                         }
                         if (self.ac.signal.aborted) return
 
@@ -966,7 +964,7 @@ function sync_url(url) {
                             file_last_version = version
                             self.file_last_text = body
                             self.last_touch = Date.now()
-                            await wait_on(require('fs').promises.writeFile(fullpath, self.file_last_text))
+                            await wait_on(atomic_write(fullpath, self.file_last_text, temp_folder))
                             if (self.ac.signal.aborted) return
                         }
 
@@ -1106,7 +1104,7 @@ async function ensure_path(path) {
     }
 }
 
-function ReconnectRateLimiter(get_wait_time) {
+function ReconnectRateLimiter(wait_time) {
     var self = {}
 
     self.conns = new Map() // Map<host, Set<url>>
@@ -1123,7 +1121,7 @@ function ReconnectRateLimiter(get_wait_time) {
         var now = Date.now()
         var my_last_turn = () => self.conns.size === 0 ? self.last_turn : self.qs[0].last_turn
 
-        while (self.qs.length && now >= my_last_turn() + get_wait_time()) {
+        while (self.qs.length && now >= my_last_turn() + wait_time) {
             var x = self.qs.shift()
             if (!x.turns.length) {
                 self.host_to_q.delete(x.host)
@@ -1137,7 +1135,7 @@ function ReconnectRateLimiter(get_wait_time) {
 
         if (self.qs.length)
             self.timer = setTimeout(process, Math.max(0,
-                my_last_turn() + get_wait_time() - now))
+                my_last_turn() + wait_time - now))
     }
 
     self.get_turn = async (url) => {
@@ -1444,6 +1442,20 @@ async function file_exists(fullpath) {
 
 function sha256(x) {
     return require('crypto').createHash('sha256').update(x).digest('base64')
+}
+
+async function atomic_write(final_destination, data, temp_folder) {
+    var temp = `${temp_folder}/${Math.random().toString(36).slice(2)}`
+    await require('fs').promises.writeFile(temp, data)
+    var stat = await require('fs').promises.stat(temp, { bigint: true })
+    await require('fs').promises.rename(temp, final_destination)
+    return stat
+}
+
+function atomic_write_sync(final_destination, data, temp_folder) {
+    var temp = `${temp_folder}/${Math.random().toString(36).slice(2)}`
+    require('fs').writeFileSync(temp, data)
+    require('fs').renameSync(temp, final_destination)
 }
 
 function is_well_formed_absolute_url(urlString) {
