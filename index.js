@@ -379,7 +379,10 @@ async function scan_files() {
         var timestamp = new Date().toLocaleTimeString(
             'en-US', {minute: '2-digit', second: '2-digit', hour: '2-digit'}
         )
-        console.log(`scan files.. ${timestamp}.  ${Date.now() - st}ms`)
+        var mem = process.memoryUsage()
+        var heapMB = (mem.heapUsed / 1024 / 1024).toFixed(1)
+        var rssMB = (mem.rss / 1024 / 1024).toFixed(1)
+        console.log(`scan files.. ${timestamp}.  ${Date.now() - st}ms  [${heapMB} MB heap, ${rssMB} MB RSS]`)
     }
     scan_files.running = false
 
@@ -1184,120 +1187,42 @@ function ReconnectRateLimiter(wait_time) {
     return self
 }
 
+// Undici-based fetch with HTTP/2 support for HTTPS,
+// falls back to built-in fetch for HTTP (faster, no Agent overhead)
+// Timeout defaults: connect.timeout=10s,
+//                   headersTimeout=5min, bodyTimeout=5min,
+//                   keepAliveTimeout=4s, keepAliveMaxTimeout=10min
 async function fetch_http2(url, options = {}) {
-    if (!fetch_http2.sessions) {
-        fetch_http2.sessions = new Map()
-        process.on("exit", () => fetch_http2.sessions.forEach(s => s.session.close()))
-    }
+    // Use built-in fetch for HTTP (faster, no need for HTTP/2)
+    if (new URL(url).protocol !== 'https:')
+        return fetch(url, options)
 
-    var u = new URL(url)
-    if (u.protocol !== "https:") return fetch(url, options)
-
-    try {
-        var sessionInfo = fetch_http2.sessions.get(u.origin)
-        if (!sessionInfo || sessionInfo.session.closed) {
-            var session = require("http2").connect(u.origin, {
-                rejectUnauthorized: options.rejectUnauthorized !== false,
-            })
-            sessionInfo = { session, pendingRejects: new Set() }
-
-            session.on("error", (e) => {
-                for (var f of sessionInfo.pendingRejects) f(e)
-                fetch_http2.sessions.delete(u.origin)
-            })
-            session.on("close", () => {
-                var e = new Error('Session closed')
-                for (var f of sessionInfo.pendingRejects) f(e)
-                fetch_http2.sessions.delete(u.origin)
-            })
-            fetch_http2.sessions.set(u.origin, sessionInfo)
-        }
-
-        var session = sessionInfo.session
-
-        return await new Promise((resolve, reject) => {
-            sessionInfo.pendingRejects.add(reject)
-
-            var responseTimeout = setTimeout(() => {
-                stream.destroy(new Error('Response timeout'))
-            }, options.responseTimeout || 10000)
-
-            var stream = session.request({
-                ":method": options.method || "GET",
-                ":path": u.pathname + u.search,
-                ":scheme": "https",
-                ":authority": u.host,
-                ...Object.fromEntries(options.headers || []),
-            })
-
-            options.signal?.addEventListener("abort",
-                () => stream.destroy(new Error("Request aborted")),
-                { once: true })
-
-            stream.on("response", headers => {
-                clearTimeout(responseTimeout)
-                sessionInfo.pendingRejects.delete(reject)
-                var status = +headers[":status"]
-                resolve({
-                    ok: status >= 200 && status < 300,
-                    status,
-                    statusText: "",
-                    headers: new Headers(Object.fromEntries(
-                        Object.entries(headers).filter(([k]) =>
-                            typeof k === "string" && !k.startsWith(":")))),
-                    body: new ReadableStream({
-                        start(ctrl) {
-                            stream.on("data", x => ctrl.enqueue(new Uint8Array(x)))
-                            stream.on("end", () => ctrl.close())
-                            stream.on("error", err => ctrl.error(err))
-                        },
-                        cancel() { stream.destroy() },
-                    }),
-                    bodyUsed: false,
-                    async _consumeBody() {
-                        this.bodyUsed = true
-                        var chunks = []
-                        var reader = this.body.getReader()
-
-                        while (true) {
-                            var { done, value } = await reader.read()
-                            if (done) break
-                            chunks.push(value)
-                        }
-                        return Buffer.concat(chunks.map((c) => (Buffer.isBuffer(c) ? c : Buffer.from(c))))
-                    },
-                    async text() { return (await this._consumeBody()).toString() },
-                    async json() { return JSON.parse(await this.text()) },
-                    async arrayBuffer() {
-                        var b = await this._consumeBody()
-                        return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)
-                    },
-                })
-            })
-
-            stream.on("error", (err) => {
-                clearTimeout(responseTimeout)
-                sessionInfo.pendingRejects.delete(reject)
-                reject(err)
-            })
-
-            var body = options.body
-            if (!body) return stream.end()
-
-            if (body instanceof Uint8Array || Buffer.isBuffer(body)) stream.end(body)
-            else if (body instanceof Blob) body.arrayBuffer()
-                .then((b) => stream.end(Buffer.from(b)))
-                .catch(reject)
-            else stream.end(typeof body === "string" ? body : JSON.stringify(body))
+    if (!fetch_http2.undici) {
+        fetch_http2.undici = require('undici')
+        var makeAgent = (insecure) => new fetch_http2.undici.Agent({
+            allowH2: true,
+            connect: { rejectUnauthorized: !insecure },
         })
-    } catch (err) {
-        if (err.code?.includes("HTTP2") || err.message?.includes("HTTP/2")) {
-            // console.log("HTTP/2 failed, falling back to HTTP/1.1:", err.message)
-            return fetch(url, options)
-        }
-        throw err
+        fetch_http2.agent = makeAgent(false)
+        fetch_http2.insecureAgent = makeAgent(true)
     }
+
+    // Workaround: undici HTTP/2 can hang with empty body on some servers
+    // See https://github.com/nodejs/undici/issues/2589
+    var body = options.body
+    if (body?.length === 0) body = undefined
+
+    return fetch_http2.undici.fetch(url, {
+        method: options.method || 'GET',
+        headers: options.headers,
+        body,
+        signal: options.signal,
+        dispatcher: options.rejectUnauthorized === false
+            ? fetch_http2.insecureAgent
+            : fetch_http2.agent,
+    })
 }
+
 
 ////////////////////////////////
 
