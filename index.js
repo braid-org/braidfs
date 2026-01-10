@@ -223,11 +223,11 @@ async function main() {
             res.writeHead(500, { 'Error-Message': '' + e })
             res.end('' + e)
         }
-    }).listen(config.port, 'localhost', () => {
+    }).listen(config.port, 'localhost', async () => {
         console.log(`daemon started on port ${config.port}`)
         console.log('!! only accessible from localhost !!')
 
-        sync_url('.braidfs/config')
+        await sync_url('.braidfs/config')
         braid_text.get('.braidfs/config', {
             subscribe: async update => {
                 let prev = config
@@ -492,6 +492,7 @@ function sync_url(url) {
             } else throw new Error(`unknown merge-type: ${self.merge_type}`)
         })()
     }
+    return sync_url.cache[path]
 
     async function detect_merge_type() {
         // special case for .braidfs/config and .braidfs/error
@@ -510,23 +511,35 @@ function sync_url(url) {
         var retry_count = 0
         while (true) {
             try {
-                var res = await braid_fetch(url, {
-                    signal: self.ac.signal,
-                    method: 'HEAD',
-                    retry: () => true,
-                    // braid_fetch will await this function on each reconnect when retrying
-                    parents: async () => reconnect_rate_limiter.get_turn(url),
-                    // version needed to force Merge-Type return header
-                    version: [],
-                    headers: {
-                        // in case it supports dt, so it doesn't give us "simpleton"
-                        'Merge-Type': 'dt',
-                    }
-                })
-                if (self.ac.signal.aborted) return
+                for (var try_sub = 0; try_sub <= 1; try_sub++) {
+                    var res = await braid_fetch(url, {
+                        signal: self.ac.signal,
+                        method: 'HEAD',
+                        retry: () => true,
+                        // braid_fetch will await this function on each reconnect when retrying
+                        parents: async () => reconnect_rate_limiter.get_turn(url),
+                        // version needed to force Merge-Type return header
+                        version: [],
+                        // setting subscribe shouldn't work according to spec,
+                        // but it does for some old braid-text servers
+                        subscribe: !!try_sub,
+                        headers: {
+                            // in case it supports dt, so it doesn't give us "simpleton"
+                            'Merge-Type': 'dt',
+                        }
+                    })
+                    if (self.ac.signal.aborted) return
 
-                var merge_type = res.headers.get('merge-type')
-                if (merge_type) return merge_type
+                    var merge_type = res.headers.get('merge-type')
+                    if (merge_type) {
+                        // convince the rate limiter to give turns to this host for a bit,
+                        // but use a fake url so we don't on_diss from the real one
+                        var fake_url = url + '?merge_type'
+                        reconnect_rate_limiter.on_conn(fake_url)
+                        setTimeout(() => reconnect_rate_limiter.on_diss(fake_url), 10 * 1000)
+                        return merge_type
+                    }
+                }
             } catch (e) {
                 if (e.name !== 'AbortError') throw e
             }
