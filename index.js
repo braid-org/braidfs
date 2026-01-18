@@ -512,12 +512,10 @@ function sync_url(url) {
         while (true) {
             try {
                 for (var try_sub = 0; try_sub <= 1; try_sub++) {
+                    await reconnect_rate_limiter.get_turn(url)
                     var res = await braid_fetch(url, {
                         signal: self.ac.signal,
                         method: 'HEAD',
-                        retry: () => true,
-                        // braid_fetch will await this function on each reconnect when retrying
-                        parents: async () => reconnect_rate_limiter.get_turn(url),
                         // version needed to force Merge-Type return header
                         version: [],
                         // setting subscribe shouldn't work according to spec,
