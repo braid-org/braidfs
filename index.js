@@ -861,6 +861,8 @@ function sync_url(url) {
         // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
         do_investigating_disconnects_log(url, 'after within_fiber')
 
+        var file_peer = Math.random().toString(36).slice(2)
+
         await file_loop_pump()
         async function file_loop_pump() {
             if (self.ac.signal.aborted) return
@@ -927,7 +929,7 @@ function sync_url(url) {
 
                             add_to_version_cache(text, version)
 
-                            await wait_on(braid_text.put(url, { version, parents, patches, merge_type: 'dt' }))
+                            await wait_on(braid_text.put(url, { version, parents, patches, merge_type: 'dt', peer: file_peer }))
                             if (self.ac.signal.aborted) return
 
                             // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
@@ -1029,7 +1031,7 @@ function sync_url(url) {
             // Subscribe to local changes to trigger file writes
             braid_text.get(url, {
                 signal: ac.signal,
-                peer: self.peer,
+                peer: file_peer,
                 merge_type: 'dt',
                 subscribe: () => {
                     if (self.ac.signal.aborted) return
@@ -1045,6 +1047,7 @@ function sync_url(url) {
 
                 fork_point_hint: old_meta_fork_point,
                 signal: ac.signal,
+                peer: self.peer,
                 headers: {
                     'Content-Type': 'text/plain',
                     ...(x => x && { Cookie: x })(config.cookies?.[new URL(url).hostname])
