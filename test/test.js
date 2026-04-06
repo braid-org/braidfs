@@ -121,7 +121,7 @@ server = require("http").createServer(async (req, res) => {
     if (req.url.startsWith('/blobs/')) {
         braid_blob.serve(req, res)
     } else {
-        if (!(await braid_text.get(req.url, {})).version.length) {
+        if (!(await braid_text.get(req.url, {full_response: true})).version.length) {
             await braid_text.put(req.url, {body: 'This is a fresh blank document, ready for you to edit.' })
         }
         braid_text.serve(req, res)
@@ -345,7 +345,7 @@ void (async () => {
 
     // Check syncing another readonly file..
     spawnNodeScript(['sync', `http://localhost:${config.braid_text_port}/readonly`]);
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, 200));
 
     // ..that it is readonly on disk..
     var fullpath = path.join(syncBasePath, `localhost:${config.braid_text_port}/readonly`)

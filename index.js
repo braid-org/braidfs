@@ -233,25 +233,25 @@ async function main() {
             subscribe: async update => {
                 let prev = config
 
-                let config = await braid_text.get('.braidfs/config')
+                let config_text = await braid_text.get('.braidfs/config')
                 try {
-                    config = JSON.parse(config)
+                    config = JSON.parse(config_text)
 
                     // did anything get deleted?
-                    var old_syncs = Object.entries(prev.sync)
-                        .filter(config => config[1])
-                        .map(config => normalize_url(config[0])
+                    var old_urls = Object.entries(prev.sync)
+                        .filter(sync_entry => sync_entry[1])
+                        .map(sync_entry => normalize_url(sync_entry[0])
                                     .replace(/^https?:\/\//, ''))
-                    var new_syncs = new Set(Object.entries(config.sync)
-                                            .filter(config => config[1])
-                                            .map(config => normalize_url(config[0])
+                    var new_urls = new Set(Object.entries(config.sync)
+                                            .filter(sync_entry => sync_entry[1])
+                                            .map(sync_entry => normalize_url(sync_entry[0])
                                                         .replace(/^https?:\/\//, '')))
-                    for (let url of old_syncs.filter(config => !new_syncs.has(config)))
+                    for (let url of old_urls.filter(url => !new_urls.has(url)))
                         unsync_url(url)
 
                     // sync all the new stuff
-                    for (let config of Object.entries(config.sync))
-                        if (config[1]) sync_url(config[0])
+                    for (let sync_entry of Object.entries(config.sync))
+                        if (sync_entry[1]) sync_url(sync_entry[0])
 
                     // if any auth stuff has changed,
                     // have the appropriate connections reconnect
@@ -265,9 +265,9 @@ async function main() {
                             || JSON.stringify(prev.cookies[domain]) !== JSON.stringify(v))
                             changed.add(domain)
                     // ok, have every domain which has changed reconnect
-                    for (let [path, config] of Object.entries(sync_url.cache))
+                    for (let [path, sync] of Object.entries(sync_url.cache))
                         if (changed.has(path.split(/\//)[0].split(/:/)[0]))
-                            (await config).reconnect?.()
+                            (await sync).reconnect?.()
                 } catch (e) {
                     if (config !== '') console.log(`warning: config file is currently invalid.`)
                     return
@@ -277,9 +277,9 @@ async function main() {
         sync_url('.braidfs/errors')
 
         // console.log({ sync: config.sync })
-        for (let sync_urls of Object.entries(config.sync))
-            if (sync_urls[1])
-                sync_url(sync_urls[0])
+        for (let sync_entry of Object.entries(config.sync))
+            if (sync_entry[1])
+                sync_url(sync_entry[0])
 
         watch_files()
         setTimeout(scan_files, 1200)

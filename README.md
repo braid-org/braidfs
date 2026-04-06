@@ -80,7 +80,7 @@ diamond-types CRDT over the Braid HTTP protocol, guaranteeing conflict-free
 editing with multiple editors, whether online or offline.
 
 A novel trick using [Time Machines](https://braid.org/time-machines) lets us
-making regular text editors conflict-free, as well, without speaking CRDT!
+make regular text editors conflict-free, as well, without speaking CRDT!
 This means that you can edit a file in Emacs, even while other people edit the
 same file, without write conflicts, and without adding CRDT code to Emacs.
 (Still under development.)
@@ -171,12 +171,20 @@ applied to the running braidfs daemon.  The only exception is the `port`
 setting, which requires restarting the daemon after a change.
 
 
+## Testing
+
+Run the test suite with:
+
+```
+npm test
+```
+
+This starts a local braid-text and braid-blob server, spawns the braidfs daemon,
+and runs through a series of sync, edit, readonly, and restart scenarios to
+verify everything works end-to-end.
+
 ## Limitations & Future Work
 
-- Doesn't sync binary yet.  Just text text mime-types:
-  `text/*`, `application/html`, and `application/json`
-  - Binary blob support would be pretty easy and nice to add.
-  - Contact us if you'd like to add it!
 - Doesn't update your editor's text with remote updates until you save
   - It's not hard to make it live-update, though, so that you can see your edits integrated with others' before you save.
   - Contact us if you'd like to help!  It would be a fun project!
