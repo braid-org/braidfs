@@ -183,7 +183,8 @@ async function main() {
                 var sync = await sync_url.cache[normalize_url(path)]
 
                 var parents = JSON.parse(decodeURIComponent(m[2]))
-                var parent_text = sync?.version_to_text_cache.get(JSON.stringify(parents)) ?? (await braid_text.get(sync.url, { parents })).body
+                var parent_text = sync?.version_to_text_cache.get(JSON.stringify(parents))
+                    ?? (await braid_text.get(sync.url, { version: parents, full_response: true })).body
 
                 var text = await new Promise(done => {
                     const chunks = []
@@ -232,18 +233,25 @@ async function main() {
             subscribe: async update => {
                 let prev = config
 
-                let x = await braid_text.get('.braidfs/config')
+                let config = await braid_text.get('.braidfs/config')
                 try {
-                    config = JSON.parse(x)
+                    config = JSON.parse(config)
 
                     // did anything get deleted?
-                    var old_syncs = Object.entries(prev.sync).filter(x => x[1]).map(x => normalize_url(x[0]).replace(/^https?:\/\//, ''))
-                    var new_syncs = new Set(Object.entries(config.sync).filter(x => x[1]).map(x => normalize_url(x[0]).replace(/^https?:\/\//, '')))
-                    for (let url of old_syncs.filter(x => !new_syncs.has(x)))
+                    var old_syncs = Object.entries(prev.sync)
+                        .filter(config => config[1])
+                        .map(config => normalize_url(config[0])
+                                    .replace(/^https?:\/\//, ''))
+                    var new_syncs = new Set(Object.entries(config.sync)
+                                            .filter(config => config[1])
+                                            .map(config => normalize_url(config[0])
+                                                        .replace(/^https?:\/\//, '')))
+                    for (let url of old_syncs.filter(config => !new_syncs.has(config)))
                         unsync_url(url)
 
                     // sync all the new stuff
-                    for (let x of Object.entries(config.sync)) if (x[1]) sync_url(x[0])
+                    for (let config of Object.entries(config.sync))
+                        if (config[1]) sync_url(config[0])
 
                     // if any auth stuff has changed,
                     // have the appropriate connections reconnect
@@ -257,11 +265,11 @@ async function main() {
                             || JSON.stringify(prev.cookies[domain]) !== JSON.stringify(v))
                             changed.add(domain)
                     // ok, have every domain which has changed reconnect
-                    for (let [path, x] of Object.entries(sync_url.cache))
+                    for (let [path, config] of Object.entries(sync_url.cache))
                         if (changed.has(path.split(/\//)[0].split(/:/)[0]))
-                            (await x).reconnect?.()
+                            (await config).reconnect?.()
                 } catch (e) {
-                    if (x !== '') console.log(`warning: config file is currently invalid.`)
+                    if (config !== '') console.log(`warning: config file is currently invalid.`)
                     return
                 }
             }
@@ -269,7 +277,9 @@ async function main() {
         sync_url('.braidfs/errors')
 
         // console.log({ sync: config.sync })
-        for (let x of Object.entries(config.sync)) if (x[1]) sync_url(x[0])
+        for (let sync_urls of Object.entries(config.sync))
+            if (sync_urls[1])
+                sync_url(sync_urls[0])
 
         watch_files()
         setTimeout(scan_files, 1200)
@@ -825,7 +835,7 @@ function sync_url(url) {
                 if (!self.local_edit_counter) self.local_edit_counter = 0
 
                 try {
-                    self.file_last_text = (await wait_on(braid_text.get(url, { version: file_last_version }))).body
+                    self.file_last_text = (await wait_on(braid_text.get(url, { version: file_last_version, full_response: true }))).body
                 } catch (e) {
                     if (self.ac.signal.aborted) return
                     // the version from the meta file doesn't exist..
@@ -835,7 +845,7 @@ function sync_url(url) {
                         // which we can acheive by setting file_last_version
                         // to the latest
                         console.log(`WARNING: there was an issue with the config file, and it is reverting to the contents at: ${braidfs_config_file}`)
-                        var x = await wait_on(braid_text.get(url, {}))
+                        var x = await wait_on(braid_text.get(url, {full_response: true}))
                         if (self.ac.signal.aborted) return
                         file_last_version = x.version
                         self.file_last_text = x.body
@@ -844,7 +854,7 @@ function sync_url(url) {
                 }
                 if (self.ac.signal.aborted) return
 
-                file_needs_writing = !v_eq(file_last_version, (await wait_on(braid_text.get(url, {}))).version)
+                file_needs_writing = !v_eq(file_last_version, (await wait_on(braid_text.get(url, {full_response: true}))).version)
                 if (self.ac.signal.aborted) return
 
                 // sanity check
@@ -956,7 +966,7 @@ function sync_url(url) {
                         if (self.ac.signal.aborted) return
                     } else if (file_needs_writing) {
                         file_needs_writing = false
-                        let { version, body } = await wait_on(braid_text.get(url, {}))
+                        let { version, body } = await wait_on(braid_text.get(url, {full_response: true}))
                         if (self.ac.signal.aborted) return
                         if (!v_eq(version, file_last_version)) {
                             // let's do a final check to see if anything has changed
