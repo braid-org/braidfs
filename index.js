@@ -7,7 +7,13 @@ var { diff_main } = require(`${__dirname}/diff.js`),
 
 // Helper function to check if a file is binary based on its extension
 function is_binary(filename) {
-    const binaryExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.mp3', '.zip', '.tar', '.rar', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.exe', '.dll', '.so', '.dylib', '.bin', '.iso', '.img', '.bmp', '.tiff', '.svg', '.webp', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.wav', '.flac', '.aac', '.ogg', '.wma', '.7z', '.gz', '.bz2', '.xz'];
+    const binaryExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.mp3',
+                              '.zip', '.tar', '.rar', '.pdf', '.doc', '.docx',
+                              '.xls', '.xlsx', '.ppt', '.pptx', '.exe', '.dll',
+                              '.so', '.dylib', '.bin', '.iso', '.img', '.bmp',
+                              '.tiff', '.svg', '.webp', '.avi', '.mov', '.wmv',
+                              '.flv', '.mkv', '.wav', '.flac', '.aac', '.ogg',
+                              '.wma', '.7z', '.gz', '.bz2', '.xz'];
     return binaryExtensions.includes(require('path').extname(filename).toLowerCase());
 }
 
@@ -102,7 +108,8 @@ console.log(`braidfs version: ${require(`${__dirname}/package.json`).version}`)
 // process command line args (argv was already processed above for --sync-base)
 if (argv.length === 1 && argv[0].match(/^(run|serve)$/)) {
     return main()
-} else if (argv.length && argv.length % 2 == 0 && argv.every((x, i) => i % 2 != 0 || x.match(/^(sync|unsync)$/))) {
+} else if (argv.length && argv.length % 2 == 0
+           && argv.every((x, i) => i % 2 != 0 || x.match(/^(sync|unsync)$/))) {
     return (async () => {
         for (let i = 0; i < argv.length; i += 2) {
             var sync = argv[i] === 'sync',
@@ -124,7 +131,8 @@ if (argv.length === 1 && argv[0].match(/^(run|serve)$/)) {
                     }]
                 })
                 if (res.ok) {
-                    console.log(`Now ${sync ? '' : 'un'}subscribed ${sync ? 'to' : 'from'} ${url} in ~/http/.braidfs/config`)
+                    console.log(`Now ${sync ? '' : 'un'}subscribed ${sync ? 'to' : 'from'}`
+                                + ` ${url} in ~/http/.braidfs/config`)
                 } else {
                     console.log(`failed to ${operation} ${url}`)
                     console.log(`server responded with ${res.status}: ${await res.text()}`)
@@ -202,9 +210,14 @@ async function main() {
                     await braid_text.put(sync.url, { version, parents, patches, merge_type: 'dt' })
 
                     // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
-                    require('fs').appendFileSync(investigating_disconnects_log, `${Date.now()}:${sync.url} -- plugin edited (${sync.investigating_disconnects_thinks_connected})\n`)
+                    require('fs').appendFileSync(investigating_disconnects_log,
+                                                 `${Date.now()}:${sync.url} -- plugin edited `
+                                                 + `(${sync.investigating_disconnects_thinks_connected})\n`)
 
-                    // may be able to do this more efficiently.. we want to make sure we're capturing a file write that is after our version was written.. there may be a way we can avoid calling file_needs_writing here
+                    // may be able to do this more efficiently.. we want to
+                    // make sure we're capturing a file write that is after
+                    // our version was written.. there may be a way we can
+                    // avoid calling file_needs_writing here
                     await new Promise(done => {
                         sync.file_written_cbs.push(done)
                         sync.signal_file_needs_writing()
@@ -215,7 +228,9 @@ async function main() {
 
             if (url !== '.braidfs/config' && url !== '.braidfs/errors') {
                 res.writeHead(404, { 'Content-Type': 'text/html' })
-                return res.end('Nothing to see here. You can go to <a href=".braidfs/config">.braidfs/config</a> or <a href=".braidfs/errors">.braidfs/errors</a>')
+                return res.end('Nothing to see here. You can go to '
+                               + '<a href=".braidfs/config">.braidfs/config</a>'
+                               + 'or <a href=".braidfs/errors">.braidfs/errors</a>')
             }
 
             braid_text.serve(req, res, { key: normalize_url(url) })
@@ -644,7 +659,8 @@ function sync_url(url) {
                         await save_meta()
                         if (self.ac.signal.aborted) return
 
-                        if (self.file_read_only !== null && await is_read_only(fullpath) !== self.file_read_only) {
+                        if (self.file_read_only !== null
+                            && await is_read_only(fullpath) !== self.file_read_only) {
                             if (self.ac.signal.aborted) return
                             await set_read_only(fullpath, self.file_read_only)
                         }
@@ -844,7 +860,8 @@ function sync_url(url) {
                         // we want to load the current file contents,
                         // which we can acheive by setting file_last_version
                         // to the latest
-                        console.log(`WARNING: there was an issue with the config file, and it is reverting to the contents at: ${braidfs_config_file}`)
+                        console.log(`WARNING: there was an issue with the config file, `
+                                    + `and it is reverting to the contents at: ${braidfs_config_file}`)
                         var x = await wait_on(braid_text.get(url, {full_response: true}))
                         if (self.ac.signal.aborted) return
                         file_last_version = x.version
@@ -854,11 +871,15 @@ function sync_url(url) {
                 }
                 if (self.ac.signal.aborted) return
 
-                file_needs_writing = !v_eq(file_last_version, (await wait_on(braid_text.get(url, {full_response: true}))).version)
+                file_needs_writing = !v_eq(
+                    file_last_version,
+                    (await wait_on(braid_text.get(url, {full_response: true}))).version
+                )
                 if (self.ac.signal.aborted) return
 
                 // sanity check
-                if (file_last_digest && sha256(self.file_last_text) != file_last_digest) throw new Error('file_last_text does not match file_last_digest')
+                if (file_last_digest && sha256(self.file_last_text) != file_last_digest)
+                    throw new Error('file_last_text does not match file_last_digest')
             } else if (await wait_on(require('fs').promises.access(fullpath).then(() => 1, () => 0))) {
                 if (self.ac.signal.aborted) return
                 // file exists, but not meta file
@@ -914,7 +935,9 @@ function sync_url(url) {
                         }
                         if (self.ac.signal.aborted) return
 
-                        if (self.file_read_only === null) try { self.file_read_only = await wait_on(is_read_only(fullpath)) } catch (e) { }
+                        if (self.file_read_only === null)
+                            try { self.file_read_only = await wait_on(is_read_only(fullpath)) }
+                            catch (e) { }
                         if (self.ac.signal.aborted) return
 
                         let text = await wait_on(require('fs').promises.readFile(
@@ -939,11 +962,16 @@ function sync_url(url) {
 
                             add_to_version_cache(text, version)
 
-                            await wait_on(braid_text.put(url, { version, parents, patches, merge_type: 'dt', peer: file_peer }))
+                            await wait_on(braid_text.put(url, { version, parents, patches,
+                                                                merge_type: 'dt', peer: file_peer }))
                             if (self.ac.signal.aborted) return
 
                             // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
-                            require('fs').appendFileSync(investigating_disconnects_log, `${Date.now()}:${url} -- file edited (${self.investigating_disconnects_thinks_connected})\n`)
+                            require('fs').appendFileSync(
+                                investigating_disconnects_log,
+                                `${Date.now()}:${url} -- file edited `
+                                + `(${self.investigating_disconnects_thinks_connected})\n`
+                            )
 
                             await write_meta_file()
                             if (self.ac.signal.aborted) return
@@ -971,7 +999,9 @@ function sync_url(url) {
                         if (!v_eq(version, file_last_version)) {
                             // let's do a final check to see if anything has changed
                             // before writing out a new version of the file
-                            let text = await wait_on(require('fs').promises.readFile(fullpath, { encoding: 'utf8' }))
+                            let text = await wait_on(
+                                require('fs').promises.readFile(fullpath, { encoding: 'utf8' })
+                            )
                             if (self.ac.signal.aborted) return
                             if (self.file_last_text != text) {
                                 // if the text is different, let's read it first..
@@ -984,7 +1014,10 @@ function sync_url(url) {
 
                             add_to_version_cache(body, version)
 
-                            try { if (await wait_on(is_read_only(fullpath))) await wait_on(set_read_only(fullpath, false)) } catch (e) { }
+                            try {
+                                if (await wait_on(is_read_only(fullpath)))
+                                    await wait_on(set_read_only(fullpath, false))
+                            } catch (e) { }
                             if (self.ac.signal.aborted) return
 
                             file_last_version = version
@@ -1004,7 +1037,9 @@ function sync_url(url) {
                         }
                         if (self.ac.signal.aborted) return
 
-                        self.file_mtimeNs_str = '' + (await wait_on(require('fs').promises.stat(fullpath, { bigint: true }))).mtimeNs
+                        self.file_mtimeNs_str = '' + (await wait_on(
+                            require('fs').promises.stat(fullpath, { bigint: true })
+                        )).mtimeNs
                         if (self.ac.signal.aborted) return
 
                         for (var cb of self.file_written_cbs) cb()
@@ -1351,7 +1386,10 @@ async function set_read_only(fullpath, read_only) {
 
     if (require('os').platform() === "win32") {
         await new Promise((resolve, reject) => {
-            require("child_process").exec(`fsutil file setattr readonly "${fullpath}" ${!!read_only}`, (error) => error ? reject(error) : resolve())
+            require("child_process").exec(
+                `fsutil file setattr readonly "${fullpath}" ${!!read_only}`
+                , (error) => error ? reject(error) : resolve()
+            )
         })
     } else {
         let mode = (await require('fs').promises.stat(fullpath)).mode
