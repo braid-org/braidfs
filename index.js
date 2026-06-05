@@ -549,6 +549,7 @@ function sync_url(url) {
                         headers: {
                             // in case it supports dt, so it doesn't give us "simpleton"
                             'Merge-Type': 'dt',
+                            Cookie: config.cookies?.[new URL(url).hostname] || undefined
                         }
                     })
                     if (self.ac.signal.aborted) return
