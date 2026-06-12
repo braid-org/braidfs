@@ -1074,11 +1074,16 @@ function sync_url(url) {
                 aborts.clear()
             }
 
-            // Subscribe to local changes to trigger file writes
+            // Subscribe to local changes to trigger file writes.
+            // head: true = header-only updates: we only need to know *that*
+            // something changed. (Without it, braid-text materializes the
+            // doc's entire edit history as patch objects just for this
+            // subscription, which caused huge transient memory at startup.)
+            // The single initial head update triggers the initial write.
             braid_text.get(url, {
                 signal: ac.signal,
                 peer: file_peer,
-                merge_type: 'dt',
+                head: true,
                 subscribe: () => {
                     if (self.ac.signal.aborted) return
                     self.signal_file_needs_writing()
