@@ -1083,6 +1083,7 @@ function sync_url(url) {
             braid_text.get(url, {
                 signal: ac.signal,
                 peer: file_peer,
+                merge_type: 'dt',
                 head: true,
                 subscribe: () => {
                     if (self.ac.signal.aborted) return
