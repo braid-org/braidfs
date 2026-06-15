@@ -1128,11 +1128,12 @@ function sync_url(url) {
                     //await sync_url.chain
                     sync_url(url)
                 },
-                on_disconnect: () => {
+                on_disconnect: e => {
                     // DEBUGGING HACK ID: L04LPFHQ1M -- INVESTIGATING DISCONNECTS
                     do_investigating_disconnects_log(url, `sync.on_disconnect`)
                     self.investigating_disconnects_thinks_connected = false
 
+                    console.log(`disconnected from ${url} with error: ${e}`)
                     return reconnect_rate_limiter.on_diss(url)
                 }
             })
