@@ -2,12 +2,14 @@
 
 # Function to calculate Base64-encoded SHA256 hash
 calculate_sha256() {
-    if command -v shasum > /dev/null; then
-        cat | shasum -a 256 | cut -d ' ' -f 1 | xxd -r -p | base64
+    if command -v openssl > /dev/null; then
+        openssl dgst -sha256 -binary | openssl base64
+    elif command -v shasum > /dev/null; then
+        shasum -a 256 | cut -d ' ' -f 1 | xxd -r -p | base64
     elif command -v sha256sum > /dev/null; then
-        cat | sha256sum | cut -d ' ' -f 1 | xxd -r -p | base64
+        sha256sum | cut -d ' ' -f 1 | xxd -r -p | base64
     else
-        echo "Error: Neither shasum nor sha256sum is available." >&2
+        echo "Error: No SHA256 tool available." >&2
         exit 1
     fi
 }
