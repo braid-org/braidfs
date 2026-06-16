@@ -1091,6 +1091,22 @@ function sync_url(url) {
                 }
             })
 
+            // Debugging: Print out changes in memory usage
+            ;(async () => {
+                var before = process.memoryUsage().heapUsed
+                try {
+                    var r = await braid_text.get(url, { full_response: true })
+                    if (self.ac.signal.aborted) return
+                    var after = process.memoryUsage().heapUsed
+                    console.log(`${url}: +${((after - before) / 1e6).toFixed(1)} MB`
+                        + ` (heap now ${(after / 1e6).toFixed(0)} MB,`
+                        + ` body ${(r?.body?.length || 0)} chars)`)
+                } catch (e) {
+                    if (e?.name !== 'AbortError')
+                        console.log(`DOC-MEM ${url}: probe error ${e}`)
+                }
+            })()
+
             // Use braid_text.sync for bidirectional sync with the remote URL
             if (is_external_link) braid_text.sync(url, new URL(url), {
 
@@ -1174,81 +1190,126 @@ async function ensure_path(path) {
     }
 }
 
+// Rate Limiting Behavior:
+//
+// - If nothing is connected (totally offline), then give one turn per 3s
+//   - Pick first host, and resolve first ticket for that host
+//
+// - If any host is connected:
+//   - Give a turn to everyone else with tickets for that host
+//   - Give a turn to one ticket for disconnected hosts, per 3s
 function ReconnectRateLimiter(wait_time) {
     var self = {}
 
     self.conns = new Map() // Map<host, Set<url>>
-    self.host_to_q = new Map() // Map<host, Array<resolve>>
-    self.qs = [] // Array<{host, turns: Array<resolve>, last_turn}>
-    self.last_turn = 0
+    self.host_to_tickets = new Map() // Map<hostname, Array<ticket>>
+    self.qs = [] // Array<{hostname, tickets: Array<ticket>, latest_turn}>
+    self.latest_turn = 0
     self.timer = null
 
-    function process() {
+    // Resolves a batch of calls to `await get_turn(url)`.
+    //  - It may be just one
+    //  - Or it may be many
+    //  - Or it may be nothing
+    //    - If the wait_time has not expired
+    //    - Or if the queue of tickets is empty
+    function give_turns () {
         if (self.timer) clearTimeout(self.timer)
         self.timer = null
 
         if (!self.qs.length) return
-        var now = Date.now()
-        var my_last_turn = () => self.conns.size === 0 ? self.last_turn : self.qs[0].last_turn
+        var fully_disconnected = self.conns.size === 0
+        var now = Date.now(),
+            ticket_turn_time = () => wait_time + (fully_disconnected
+                                                   ? self.latest_turn
+                                                   : self.qs[0].latest_turn)
 
-        while (self.qs.length && now >= my_last_turn() + wait_time) {
-            var x = self.qs.shift()
-            if (!x.turns.length) {
-                self.host_to_q.delete(x.host)
+        // Go through the queue of hosts and tickets, to pick some to resolve
+        while (self.qs.length && now >= ticket_turn_time()) {
+            // Remove the first host from top of the queue
+            var host = self.qs.shift()
+
+            // Garbage collect hosts without tickets
+            if (host.tickets.length === 0) {
+                self.host_to_tickets.delete(host.host)
                 continue
             }
 
-            x.turns.shift()()
-            x.last_turn = self.last_turn = now
-            self.qs.push(x)
+            // Give this ticket holder a turn!
+            host.tickets.shift()()
+
+            // And reinsert the host back to the end
+            self.qs.push(host)
+            host.latest_turn = self.latest_turn = now
         }
 
+        // Set timer for the next round of get_turns() to run
         if (self.qs.length)
-            self.timer = setTimeout(process, Math.max(0,
-                my_last_turn() + wait_time - now))
+            self.timer = setTimeout(give_turns,
+                                    Math.max(0, ticket_turn_time() - now))
     }
 
     self.get_turn = async (url) => {
-        var host = new URL(url).host
+        var hostname = new URL(url).host
         
         // If host has connections, give turn immediately
-        if (self.conns.has(host)) return
+        if (self.conns.has(hostname)) return
 
         // console.log(`throttling reconn to ${url} (no conns yet to ${self.conns.size ? host : 'anything'})`)
         
-        if (!self.host_to_q.has(host)) {
-            var turns = []
-            self.host_to_q.set(host, turns)
-            self.qs.unshift({host, turns, last_turn: 0})
+        if (!self.host_to_tickets.has(hostname)) {
+            var tickets = []
+            self.host_to_tickets.set(hostname, tickets)
+            self.qs.unshift({hostname, tickets, latest_turn: 0})
         }
-        var p = new Promise(resolve => self.host_to_q.get(host).push(resolve))
-        process()
+
+        var p = new Promise(resolve =>
+            // This resolve function becomes a ticket!
+            self.host_to_tickets.get(hostname).push(resolve))
+        give_turns()
         await p
     }
 
+    // After you get a turn, and connect, it's your responsibility to call
+    // this function to tell the rate limiter that you're online.
     self.on_conn = url => {
-        var host = new URL(url).host
-        if (!self.conns.has(host))
-            self.conns.set(host, new Set())
-        self.conns.get(host).add(url)
+        // When a host connects, it's time to give a turn to everyone else
+        // with tickets for that host
+
+        var hostname = new URL(url).host
+
+        // We keep track of the connections to each host so that we know which
+        // ones are online and offline.
+        if (!self.conns.has(hostname))
+            self.conns.set(hostname, new Set())  // Initialize the set
+
+        // Add this connection to our memory!
+        self.conns.get(hostname).add(url)
         
-        // If there are turns waiting for this host, resolve them all immediately
-        var turns = self.host_to_q.get(host)
-        if (turns) {
-            for (var turn of turns) turn()
-            turns.splice(0, turns.length)
+        // If there are tickets waiting for this host, resolve them all immediately
+        var tickets = self.host_to_tickets.get(hostname)
+        if (tickets) {
+            for (var ticket of tickets) ticket()
+            tickets.splice(0, tickets.length)
         }
         
-        process()
+        give_turns()
     }
 
+    // After you get a turn, and disconnect, it's your responsibility to call
+    // this function to tell the rate limiter that you're offline.
     self.on_diss = url => {
-        var host = new URL(url).host
-        var urls = self.conns.get(host)
-        if (urls) {
-            urls.delete(url)
-            if (urls.size === 0) self.conns.delete(host)
-        }
+        var hostname = new URL(url).host
+        var urls = self.conns.get(hostname)
+
+        console.assert(urls, 'ReconnectRateLimiter: out of sync!  '
+                       + 'Attempt to disconnect from url that is not known to be connected.')
+
+        // Remove this dropped connection from our set!
+        urls.delete(url)
+
+        // And garbage collect the host's connections set if now empty
+        if (urls.size === 0) self.conns.delete(hostname)
     }
 
     return self
