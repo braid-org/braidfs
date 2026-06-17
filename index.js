@@ -541,8 +541,6 @@ function sync_url(url) {
                     var res = await braid_fetch(url, {
                         signal: self.ac.signal,
                         method: 'HEAD',
-                        // version needed to force Merge-Type return header
-                        version: [],
                         // setting subscribe shouldn't work according to spec,
                         // but it does for some old braid-text servers
                         subscribe: !!try_sub,
@@ -565,15 +563,16 @@ function sync_url(url) {
                     }
                 }
             } catch (e) {
-                if (e.name !== 'AbortError') throw e
-            }
-            if (self.ac.signal.aborted) return
+                if (self.ac.signal.aborted) return
 
-            // Retry with increasing delays: 1s, 2s, 3s, 3s, 3s...
-            var delay = Math.min(++retry_count, 3)
-            console.log(`retrying in ${delay}s: ${url} after error: no merge-type header`)
-            await new Promise(r => setTimeout(r, delay * 1000))
-            if (self.ac.signal.aborted) return
+                // Retry with increasing delays: 1s, 2s, 3s, 3s, 3s...
+                var delay = Math.min(++retry_count, 3)
+                console.log(`retrying in ${delay}s: ${url} after error: ${e}`)
+                await new Promise(r => setTimeout(r, delay * 1000))
+                if (self.ac.signal.aborted) return
+                continue
+            }
+            throw new Error(`no merge-type detected for url: ${url}`)
         }
     }
     
@@ -1218,9 +1217,9 @@ function ReconnectRateLimiter(wait_time) {
         self.timer = null
 
         if (!self.qs.length) return
-        var fully_disconnected = self.conns.size === 0
+        var fully_disconnected = () => self.conns.size === 0
         var now = Date.now(),
-            ticket_turn_time = () => wait_time + (fully_disconnected
+            ticket_turn_time = () => wait_time + (fully_disconnected()
                                                    ? self.latest_turn
                                                    : self.qs[0].latest_turn)
 
@@ -1231,7 +1230,7 @@ function ReconnectRateLimiter(wait_time) {
 
             // Garbage collect hosts without tickets
             if (host.tickets.length === 0) {
-                self.host_to_tickets.delete(host.host)
+                self.host_to_tickets.delete(host.hostname)
                 continue
             }
 
@@ -1255,7 +1254,7 @@ function ReconnectRateLimiter(wait_time) {
         // If host has connections, give turn immediately
         if (self.conns.has(hostname)) return
 
-        // console.log(`throttling reconn to ${url} (no conns yet to ${self.conns.size ? host : 'anything'})`)
+        // console.log(`throttling reconn to ${url} (no conns yet to ${self.conns.size ? hostname : 'anything'})`)
         
         if (!self.host_to_tickets.has(hostname)) {
             var tickets = []
