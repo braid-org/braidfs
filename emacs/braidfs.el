@@ -22,9 +22,7 @@
 (defun braidfs-binary ()
   "Return the path to the `braidfs' executable, or nil if not found.
 Uses `braidfs-binary-location' if it is set, otherwise searches the
-PATH and caches the result.  Because it keeps re-searching while the
-location is still unknown, installing braidfs after Emacs has already
-started is picked up on the next attempt -- no restart needed."
+PATH and caches the result."
   (or braidfs-binary-location
       (setq braidfs-binary-location (find-executable "braidfs"))))
 
