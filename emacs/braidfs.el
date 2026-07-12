@@ -19,6 +19,15 @@
   :type 'string
   :group 'braidfs)
 
+(defun braidfs-binary ()
+  "Return the path to the `braidfs' executable, or nil if not found.
+Uses `braidfs-binary-location' if it is set, otherwise searches the
+PATH and caches the result.  Because it keeps re-searching while the
+location is still unknown, installing braidfs after Emacs has already
+started is picked up on the next attempt -- no restart needed."
+  (or braidfs-binary-location
+      (setq braidfs-binary-location (find-executable "braidfs"))))
+
 (defvar-local braidfs-last-saved-version nil
   "The version status of the file being edited with braidfs.
 Can be:
@@ -53,7 +62,7 @@ Can be:
     ;; Mark that we're waiting for the process to complete
     (setq braidfs-last-saved-version 'waiting)
     
-    (let* ((program "braidfs")
+    (let* ((program (braidfs-binary))
            (args (list "editing" (expand-file-name (buffer-file-name))))
            (process-buffer (generate-new-buffer " *braidfs-edit*")))
       
@@ -74,9 +83,12 @@ Can be:
                                (with-current-buffer target-buffer
                                  ;; Only update if this is still the active process
                                  (when (eq proc braidfs-editor-process)
-                                   (setq braidfs-last-saved-version (if (= exit-code 0) output (progn
-                                     (message "braidfs is not handling this file because of an error.")
-                                     'error)))))))
+                                   (setq braidfs-last-saved-version
+                                         (if (= exit-code 0)
+                                             output
+                                           (progn
+                                             (message "braidfs is not handling this file because of an error.")
+                                             'error)))))))
                            ;; Clean up the process buffer
                            (kill-buffer (process-buffer proc))))))
       
@@ -107,7 +119,7 @@ Can be:
           nil)  ;; Return nil to allow normal save mechanism
       
       ;; Call "braidfs edited" with the parent version and new content
-      (let* ((program "braidfs")
+      (let* ((program (braidfs-binary))
              (args (list "edited"
                          (expand-file-name (buffer-file-name))
                          braidfs-last-saved-version))
@@ -166,7 +178,7 @@ Can be:
          (original-buffer (current-buffer))
          (start-time (current-time))
          (timer-info (list nil)))  ; Use a list to store timer reference
-    (shell-command (concat "braidfs sync "
+    (shell-command (concat (shell-quote-argument (braidfs-binary)) " sync "
                            (replace-regexp-in-string "^/home/[^/]+/http/"
                                                      "https://"
                                                      filename)
@@ -195,7 +207,7 @@ Can be:
   (interactive)
   (setq filename (or filename (buffer-file-name)))
   (let* ((default-directory (expand-file-name "~/")))
-    (shell-command (concat "braidfs unsync "
+    (shell-command (concat (shell-quote-argument (braidfs-binary)) " unsync "
                          (replace-regexp-in-string "^/home/[^/]+/http/"
                                                    "https://"
                                                    filename)))))
@@ -222,15 +234,24 @@ Can be:
   "Enables conflict-free collaborative editing in emacs over braidfs."
   (interactive)
 
-  ;; Add hooks and advice
-  (add-hook 'before-change-functions 'braidfs-before-change-function)
-  (add-hook 'find-file-hook 'braidfs-reset-state)
-  (add-hook 'write-file-functions 'braidfs-write-file-hook)
-  (add-hook 'post-command-hook 'braidfs-post-command-hook)
-  (advice-add 'save-buffer :around #'braidfs-around-save-buffer-advice)
+  (if (not (braidfs-binary))
+      ;; Bail out if the `braidfs' executable can't be found, since every
+      ;; braidfs command we run would otherwise fail on each edit and save.
+      (message (concat "braidfs: FAILED -- "
+                       "the `braidfs' executable was not found. "
+                       "Make sure braidfs is installed on your $PATH "
+                       "(and/or set M-x customize-variable braidfs-binary-location), "
+                       "then re-run M-x braidfs-enable-collab."))
 
-  (setq braidfs-previous-autorevert-value global-auto-revert-mode)
-  (global-auto-revert-mode 1))
+    ;; Add hooks and advice
+    (add-hook 'before-change-functions 'braidfs-before-change-function)
+    (add-hook 'find-file-hook 'braidfs-reset-state)
+    (add-hook 'write-file-functions 'braidfs-write-file-hook)
+    (add-hook 'post-command-hook 'braidfs-post-command-hook)
+    (advice-add 'save-buffer :around #'braidfs-around-save-buffer-advice)
+
+    (setq braidfs-previous-autorevert-value global-auto-revert-mode)
+    (global-auto-revert-mode 1)))
 
 (defun braidfs-disable-collab ()
   "Disables conflict-free collaborative editing in emacs over braidfs."
