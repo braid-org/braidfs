@@ -52,9 +52,6 @@ require('fs').mkdirSync(sync_base_meta, { recursive: true })
 require('fs').mkdirSync(trash, { recursive: true })
 require('fs').mkdirSync(temp_folder, { recursive: true })
 
-// Clear out temp folder
-for (let f of require('fs').readdirSync(temp_folder))
-    require('fs').unlinkSync(`${temp_folder}/${f}`)
 
 try {
     config = require('fs').readFileSync(braidfs_config_file, 'utf8')
@@ -156,6 +153,11 @@ You can run it with:
 async function main() {
     process.on("unhandledRejection", (x) => console.log(`unhandledRejection: ${x.stack}`))
     process.on("uncaughtException", (x) => console.log(`uncaughtException: ${x.stack}`))
+
+    // Clear out temp folder.  Only the daemon may do this: a transient CLI
+    // process would delete temp files the running daemon is mid-rename on.
+    for (let f of require('fs').readdirSync(temp_folder))
+        require('fs').unlinkSync(`${temp_folder}/${f}`)
 
     await braid_text.db_folder_init()
     await braid_blob.init()

@@ -205,11 +205,10 @@ function fail(why) {
 }
 
 void (async () => {
-    // First spawn to create the config
+    // First spawn to create the config.  With no command, braidfs writes
+    // its config, prints usage, and exits on its own.
     var child = spawnNodeScript();
-    await new Promise(resolve => setTimeout(resolve, 100));
-    child.kill('SIGTERM');
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => child.on('exit', resolve));
     
     // Modify the config file
     var configPath = path.join(syncBasePath, '.braidfs', 'config');
@@ -231,6 +230,10 @@ void (async () => {
     // Read the current content of the z file
     var zFilePath = path.join(syncBasePath, `localhost:${config.braid_text_port}`, 'z');
     console.log(`zFilePath = ${zFilePath}`)
+    // Wait for the file to hold the server's content (it can briefly exist
+    // empty before the first sync update arrives)
+    await until(() => fs.readFileSync(zFilePath, 'utf8') ===
+                      'This is a fresh blank document, ready for you to edit.')
     var currentContent = fs.readFileSync(zFilePath, 'utf8');
     console.log(`currentContent = ${currentContent}`)
 
@@ -246,11 +249,13 @@ void (async () => {
     await new Promise(resolve => setTimeout(resolve, 100));
     
     // Verify the file was updated
+    await until(() => fs.readFileSync(zFilePath, 'utf8') === newContent)
     var updatedContent = fs.readFileSync(zFilePath, 'utf8');
     console.log(`updatedContent = ${updatedContent}`)
     if (newContent !== updatedContent) return fail('new content not what we wanted')
     
     // Check if the change propagated back to the braid-text server
+    await until(async () => (await (await fetch(`http://localhost:${config.braid_text_port}/z`)).text()) === newContent)
     var response = await fetch(`http://localhost:${config.braid_text_port}/z`);
     var serverContent = await response.text();
     if (newContent !== serverContent) return fail('server z content not what we wanted')
@@ -269,6 +274,7 @@ void (async () => {
 
     // Verify the current content of the blobs/z file
     var blobszFilePath = path.join(syncBasePath, `localhost:${config.braid_text_port}`, 'blobs/z');
+    await until(() => fs.readFileSync(blobszFilePath, 'utf8') === 'yo!')
     var currentContent = fs.readFileSync(blobszFilePath, 'utf8');
     if (currentContent !== 'yo!') return fail('blobs/z content not what we wanted')
 
@@ -277,6 +283,7 @@ void (async () => {
     await new Promise(resolve => setTimeout(resolve, 100))
 
     // Check if the change propagated back to the server
+    await until(async () => (await (await fetch(`http://localhost:${config.braid_text_port}/blobs/z`)).text()) === 'YO!')
     var response = await fetch(`http://localhost:${config.braid_text_port}/blobs/z`);
     var serverContent = await response.text();
     console.log(`serverContent = ${serverContent}`)
@@ -297,10 +304,13 @@ void (async () => {
 
     // Check that it is readonly on disk..
     var fullpath = path.join(syncBasePath, `localhost:${config.braid_text_port}/blobs/readonly`)
+    await until(() => file_exists(fullpath))
     if (!(await file_exists(fullpath))) return fail('file should have been there')
+    await until(() => is_read_only(fullpath))
     if (!(await is_read_only(fullpath))) return fail('was supposed to be readonly')
 
     // Verify the current content
+    await until(() => fs.readFileSync(fullpath, 'utf8') === 'poof')
     if (fs.readFileSync(fullpath, 'utf8') !== 'poof') return fail('blobs/readonly content not what we wanted')
 
     // Try modifying the blob "internally"
@@ -309,6 +319,7 @@ void (async () => {
     await new Promise(resolve => setTimeout(resolve, 100))
 
     // Verify the current content reverted
+    await until(() => fs.readFileSync(fullpath, 'utf8') === 'poof')
     if (fs.readFileSync(fullpath, 'utf8') !== 'poof') return fail('blobs/readonly content not what we wanted')
 
     // shutdown
@@ -324,6 +335,7 @@ void (async () => {
     await new Promise(resolve => setTimeout(resolve, 200));
 
     // Check if the change propagated back to the server
+    await until(async () => (await (await fetch(`http://localhost:${config.braid_text_port}/blobs/z`)).text()) === 'hope')
     var response = await fetch(`http://localhost:${config.braid_text_port}/blobs/z`);
     var serverContent = await response.text();
     console.log(`serverContent = ${serverContent}`)
@@ -333,11 +345,18 @@ void (async () => {
     spawnNodeScript(['sync', `http://localhost:${config.braid_text_port}/blobs/failonce`]);
     await new Promise(resolve => setTimeout(resolve, 200));
 
-    fs.writeFileSync(path.join(syncBasePath, `localhost:${config.braid_text_port}/blobs/failonce`), 'hope2');
+    // Wait for the sync to be established (file mirrors the server's 'init')
+    // before editing the file locally -- writing earlier makes braidfs see an
+    // unsynced stray file and move it to trash
+    var failoncePath = path.join(syncBasePath, `localhost:${config.braid_text_port}/blobs/failonce`)
+    await until(() => fs.readFileSync(failoncePath, 'utf8') === 'init')
+
+    fs.writeFileSync(failoncePath, 'hope2');
 
     await new Promise(resolve => setTimeout(resolve, 200))
 
     // Check if the change propagated back to the server
+    await until(async () => (await (await fetch(`http://localhost:${config.braid_text_port}/blobs/failonce`)).text()) === 'hope2')
     var response = await fetch(`http://localhost:${config.braid_text_port}/blobs/failonce`);
     var serverContent = await response.text();
     console.log(`serverContent = ${serverContent}`)
@@ -349,12 +368,25 @@ void (async () => {
 
     // ..that it is readonly on disk..
     var fullpath = path.join(syncBasePath, `localhost:${config.braid_text_port}/readonly`)
+    await until(() => file_exists(fullpath))
     if (!(await file_exists(fullpath))) return fail('file should have been there')
+    await until(() => is_read_only(fullpath))
     if (!(await is_read_only(fullpath))) return fail('was supposed to be readonly')
 
     console.log('TESTS PASSED!')
     cleanup()
 })()
+
+// Polls cond (sync or async) until truthy or ~5s passes; returns last value.
+// Exceptions in cond (e.g. transient ENOENT during atomic renames) count as falsy.
+async function until(cond) {
+    var deadline = Date.now() + 5000
+    while (true) {
+        try { var x = await cond() } catch (e) {}
+        if (x || Date.now() > deadline) return x
+        await new Promise(done => setTimeout(done, 20))
+    }
+}
 
 async function file_exists(fullpath) {
     try {
