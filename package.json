@@ -8,7 +8,7 @@
   "dependencies": {
     "braid-blob": "~0.0.88",
     "braid-http": "~1.4.6",
-    "braid-text": "~0.5.27",
+    "braid-text": "~0.5.32",
     "chokidar": "^4.0.3",
     "undici": "^7.18.2"
   },
